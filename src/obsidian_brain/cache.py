@@ -1,0 +1,351 @@
+"""
+In-memory cache for vault structure with on-demand refresh.
+
+Provides efficient access to vault metadata without repeated API calls.
+The cache must be explicitly refreshed via the refresh_vault_structure tool.
+"""
+
+import asyncio
+from datetime import datetime
+from typing import TYPE_CHECKING
+
+from .models import (
+    FolderNode,
+    NoteMetadata,
+    VaultStats,
+    VaultStructure,
+)
+from .utils.wikilinks import extract_wikilinks
+
+if TYPE_CHECKING:
+    from .client import ObsidianClient
+
+
+class CacheNotInitializedError(Exception):
+    """Raised when cache is accessed before initialization."""
+
+    def __init__(self):
+        super().__init__(
+            "Vault structure cache not initialized. "
+            "Call refresh_vault_structure tool first."
+        )
+
+
+class VaultCache:
+    """
+    In-memory cache for vault structure with on-demand refresh.
+
+    The cache stores:
+    - Folder hierarchy
+    - Note metadata (tags, links, frontmatter)
+    - Backlink index (computed from outgoing links)
+    - Aggregate statistics
+
+    Usage:
+        cache = VaultCache()
+        async with ObsidianClient() as client:
+            await cache.refresh(client)
+            structure = cache.get_structure()
+    """
+
+    def __init__(self):
+        self._structure: VaultStructure | None = None
+        self._lock = asyncio.Lock()
+        self._backlink_index: dict[str, list[str]] = {}
+
+    @property
+    def is_initialized(self) -> bool:
+        """Check if cache has been initialized."""
+        return self._structure is not None
+
+    def get_structure(self) -> VaultStructure:
+        """
+        Get cached structure, raises if not initialized.
+
+        Returns:
+            The cached VaultStructure
+
+        Raises:
+            CacheNotInitializedError: If refresh hasn't been called
+        """
+        if self._structure is None:
+            raise CacheNotInitializedError()
+        return self._structure
+
+    def get_backlinks(self, path: str) -> list[str]:
+        """
+        Get notes that link to the specified path.
+
+        Args:
+            path: Note path to find backlinks for
+
+        Returns:
+            List of paths that link to this note
+        """
+        if not self.is_initialized:
+            raise CacheNotInitializedError()
+        return self._backlink_index.get(path, [])
+
+    def get_note_metadata(self, path: str) -> NoteMetadata | None:
+        """
+        Get cached metadata for a specific note.
+
+        Args:
+            path: Note path
+
+        Returns:
+            NoteMetadata if found, None otherwise
+        """
+        if not self.is_initialized:
+            raise CacheNotInitializedError()
+
+        for note in self._structure.notes:
+            if note.path == path:
+                return note
+        return None
+
+    def get_all_tags(self) -> dict[str, int]:
+        """
+        Get all tags with their usage counts.
+
+        Returns:
+            Dict mapping tag name to count
+        """
+        if not self.is_initialized:
+            raise CacheNotInitializedError()
+
+        tag_counts: dict[str, int] = {}
+        for note in self._structure.notes:
+            for tag in note.tags:
+                tag_counts[tag] = tag_counts.get(tag, 0) + 1
+        return tag_counts
+
+    def get_notes_by_tag(self, tag: str) -> list[str]:
+        """
+        Get all note paths that have a specific tag.
+
+        Args:
+            tag: Tag to search for
+
+        Returns:
+            List of note paths with this tag
+        """
+        if not self.is_initialized:
+            raise CacheNotInitializedError()
+
+        return [note.path for note in self._structure.notes if tag in note.tags]
+
+    async def refresh(self, client: "ObsidianClient") -> VaultStructure:
+        """
+        Rebuild structure from vault.
+
+        This is a potentially slow operation for large vaults as it:
+        1. Recursively lists all files
+        2. Fetches metadata for each note
+        3. Extracts wikilinks from content
+        4. Builds backlink index
+        5. Computes statistics
+
+        Args:
+            client: ObsidianClient instance to use for API calls
+
+        Returns:
+            The refreshed VaultStructure
+        """
+        async with self._lock:
+            self._structure = await self._build_structure(client)
+            return self._structure
+
+    async def _build_structure(self, client: "ObsidianClient") -> VaultStructure:
+        """Internal method to build complete structure."""
+        # Step 1: Get all files recursively
+        all_entries = await self._get_directory_tree(client, "/")
+        folders = all_entries["folders"]
+        file_paths = all_entries["files"]
+
+        # Step 2: Fetch metadata for all markdown files
+        notes: list[NoteMetadata] = []
+        md_files = [f for f in file_paths if f.endswith(".md")]
+
+        for file_path in md_files:
+            try:
+                note_data = await client.get_note(file_path, include_metadata=True)
+                content = note_data.get("content", "")
+
+                # Extract wikilinks from content
+                outgoing_links = extract_wikilinks(content)
+
+                # Extract title from filename or H1
+                title = self._extract_title(file_path, content)
+
+                note = NoteMetadata(
+                    path=file_path,
+                    title=title,
+                    tags=note_data.get("tags", []),
+                    outgoing_links=outgoing_links,
+                    incoming_links=[],  # Will be populated by backlink index
+                    frontmatter=note_data.get("frontmatter", {}),
+                    modified=note_data.get("modified"),
+                )
+                notes.append(note)
+            except Exception:
+                # Skip notes that can't be read
+                continue
+
+        # Step 3: Build backlink index
+        self._backlink_index = self._build_backlink_index(notes, md_files)
+
+        # Step 4: Populate incoming_links from backlink index
+        for note in notes:
+            note.incoming_links = self._backlink_index.get(note.path, [])
+
+        # Step 5: Compute statistics
+        all_tags = set()
+        total_links = 0
+        orphan_count = 0
+
+        for note in notes:
+            all_tags.update(note.tags)
+            total_links += len(note.outgoing_links)
+            if not note.incoming_links and not note.outgoing_links:
+                orphan_count += 1
+
+        stats = VaultStats(
+            total_notes=len(notes),
+            total_folders=len(folders),
+            total_tags=len(all_tags),
+            total_links=total_links,
+            orphan_notes=orphan_count,
+        )
+
+        return VaultStructure(
+            folders=folders,
+            notes=notes,
+            stats=stats,
+            refreshed_at=datetime.now(),
+        )
+
+    async def _get_directory_tree(
+        self, client: "ObsidianClient", path: str
+    ) -> dict[str, list]:
+        """
+        Recursively build directory tree and collect files.
+
+        Returns:
+            Dict with 'folders' (list of FolderNode) and 'files' (list of paths)
+        """
+        folders: list[FolderNode] = []
+        files: list[str] = []
+
+        try:
+            entries = await client.list_directory(path)
+        except Exception:
+            return {"folders": folders, "files": files}
+
+        for entry in entries:
+            name = entry["name"]
+            entry_type = entry["type"]
+
+            entry_path = name if path == "/" else f"{path.rstrip('/')}/{name}"
+
+            if entry_type == "folder":
+                # Recurse into subfolder
+                sub_result = await self._get_directory_tree(client, entry_path)
+
+                folder = FolderNode(
+                    name=name,
+                    path=entry_path + "/",
+                    children=sub_result["folders"],
+                )
+                folders.append(folder)
+                files.extend(sub_result["files"])
+            else:
+                files.append(entry_path)
+
+        return {"folders": folders, "files": files}
+
+    def _extract_title(self, path: str, content: str) -> str:
+        """
+        Extract title from note path or content.
+
+        Prefers H1 heading if present, falls back to filename.
+        """
+        # Try to find H1 heading
+        lines = content.split("\n")
+        for line in lines:
+            line = line.strip()
+            if line.startswith("# ") and not line.startswith("## "):
+                return line[2:].strip()
+
+        # Fall back to filename without extension
+        filename = path.split("/")[-1]
+        if filename.endswith(".md"):
+            filename = filename[:-3]
+        return filename
+
+    def _build_backlink_index(
+        self, notes: list[NoteMetadata], all_paths: list[str]
+    ) -> dict[str, list[str]]:
+        """
+        Build reverse index of backlinks.
+
+        Maps note path -> list of paths that link to it.
+        """
+        index: dict[str, list[str]] = {}
+
+        # Build a map from note names to paths for resolution
+        name_to_path: dict[str, str] = {}
+        for path in all_paths:
+            # Get filename without extension
+            name = path.split("/")[-1]
+            if name.endswith(".md"):
+                name = name[:-3]
+            name_to_path[name.lower()] = path
+
+            # Also map full path without extension
+            path_no_ext = path[:-3] if path.endswith(".md") else path
+            name_to_path[path_no_ext.lower()] = path
+
+        for note in notes:
+            for link in note.outgoing_links:
+                # Resolve link to actual path
+                resolved = self._resolve_link(link, name_to_path)
+                if resolved:
+                    if resolved not in index:
+                        index[resolved] = []
+                    if note.path not in index[resolved]:
+                        index[resolved].append(note.path)
+
+        return index
+
+    def _resolve_link(
+        self, link: str, name_to_path: dict[str, str]
+    ) -> str | None:
+        """
+        Resolve a wikilink to a full path.
+
+        Handles:
+        - Full paths: "folder/note"
+        - Simple names: "note"
+        """
+        # Normalize the link
+        link_lower = link.lower()
+
+        # Try exact match first
+        if link_lower in name_to_path:
+            return name_to_path[link_lower]
+
+        # Try with .md extension
+        if f"{link_lower}.md" in name_to_path:
+            return name_to_path[f"{link_lower}.md"]
+
+        # Try just the note name (last component)
+        name_only = link.split("/")[-1].lower()
+        if name_only in name_to_path:
+            return name_to_path[name_only]
+
+        return None
+
+
+# Global singleton instance
+vault_cache = VaultCache()

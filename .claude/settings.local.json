@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__tavily__tavily_extract",
+      "mcp__sequential-thinking__sequentialthinking",
+      "WebFetch(domain:coddingtonbear.github.io)",
+      "mcp__tavily__tavily_search",
+      "WebFetch(domain:mcp-use.com)",
+      "Bash(uv run python:*)",
+      "Bash(uv run ruff:*)",
+      "Bash(.venv/bin/ruff check src/)",
+      "Bash(uv run:*)",
+      "Bash(uv pip install:*)"
+    ]
+  },
+  "enableAllProjectMcpServers": true,
+  "enabledMcpjsonServers": [
+    "shadcn"
+  ]
+}
