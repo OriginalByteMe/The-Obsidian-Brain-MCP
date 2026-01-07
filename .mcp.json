@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "obsidian-brain": {
+      "type": "stdio",
+      "command": "docker",
+      "args": ["compose", "run", "--rm", "-T", "obsidian-brain"]
+    }
+  }
+}

@@ -4,6 +4,7 @@ Vault structure resource for Obsidian Brain MCP.
 Exposes the cached vault structure as an MCP resource.
 """
 
+import json
 from typing import TYPE_CHECKING
 
 from ..cache import CacheNotInitializedError, vault_cache
@@ -53,7 +54,6 @@ def register_structure_resource(server: "MCPServer") -> None:
         """
         try:
             tags = vault_cache.get_all_tags()
-            import json
             return json.dumps(tags, indent=2)
         except CacheNotInitializedError:
             return '{"error": "Vault structure not initialized. Call refresh_vault_structure tool first."}'
