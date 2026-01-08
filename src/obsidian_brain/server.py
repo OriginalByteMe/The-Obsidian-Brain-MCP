@@ -13,6 +13,8 @@ from .resources.structure import register_structure_resource
 from .tools.daily import register_daily_tools
 from .tools.knowledge import register_knowledge_tools
 from .tools.links import register_link_tools
+from .tools.memory import register_memory_tools
+from .tools.onboarding import register_onboarding_tools
 from .tools.search import register_search_tools
 from .tools.tags import register_tag_tools
 from .tools.vault import register_vault_tools
@@ -29,20 +31,53 @@ the Obsidian Local REST API.
 
 ## Getting Started
 
-1. First, call `refresh_vault_structure` to initialize the vault cache
-2. **RECOMMENDED**: Call `create_vault_knowledge_base` to generate persistent context
-3. Use `list_vault_files` to explore the vault structure
-4. Use `get_note` to read note content and metadata
-5. Use `create_note` to create new notes with tags and backlinks
+1. First, call `check_onboarding_status` to see if vault is initialized
+2. If not onboarded, call `refresh_vault_structure` then `run_onboarding`
+3. Use `list_memories` to see available context from previous sessions
+4. Read relevant memories with `read_memory` before starting work
+5. Use vault tools to explore and modify notes
+
+## Onboarding Workflow
+
+For new vaults or first-time use:
+1. `check_onboarding_status` - Check if vault is configured
+2. `refresh_vault_structure` - Scan the vault structure
+3. `run_onboarding` - Analyze vault and create configuration
+
+Onboarding creates `.obsidian-brain/` folder with:
+- `config.yml` - Detected patterns (PARA, Zettelkasten, naming conventions)
+- `memories/vault-overview.md` - Vault structure summary
+- `memories/conventions.md` - Usage guidelines
+
+## Memory System
+
+Memories persist across sessions in `.obsidian-brain/memories/`:
+- `list_memories` - See all available memories
+- `read_memory` - Read specific memory content
+- `write_memory` - Store new information for future sessions
+- `edit_memory` - Modify existing memory content
+- `delete_memory` - Remove outdated memories
+
+Store memories for: project context, user preferences, learnings, session summaries.
 
 ## Available Resources
 
-- `vault://structure` - Full vault structure with folders, notes, and metadata (JSON)
-- `vault://tags` - All tags with usage counts (JSON)
-- `vault://stats` - Aggregate vault statistics (JSON)
-- `vault://knowledge` - **Persistent knowledge base** (Markdown) - comprehensive vault overview
+- `vault://structure` - Full vault structure with folders, notes, and metadata
+- `vault://tags` - All tags with usage counts
+- `vault://stats` - Aggregate vault statistics
+- `vault://knowledge` - Persistent knowledge base (Markdown)
 
 ## Available Tools
+
+### Onboarding & Memory
+- `check_onboarding_status` - Check if vault is initialized
+- `run_onboarding` - Analyze vault and create configuration
+- `get_vault_config` - Read the vault configuration
+- `list_memories` - List all stored memories
+- `read_memory` - Read a specific memory
+- `write_memory` - Create or update a memory
+- `edit_memory` - Edit memory with search/replace
+- `delete_memory` - Remove a memory
 
 ### Vault Operations
 - `list_vault_files` - List files/folders at a path
@@ -76,34 +111,19 @@ the Obsidian Local REST API.
 - `create_daily_entry` - Create timestamped entry with tags/links
 - `get_periodic_note` - Get weekly/monthly/quarterly/yearly notes
 
-### Knowledge Base (Persistent Context)
-- `create_vault_knowledge_base` - Generate/update persistent vault knowledge file
-- `get_knowledge_base_status` - Check if knowledge base exists and when updated
+### Knowledge Base
+- `create_vault_knowledge_base` - Generate persistent vault overview
+- `get_knowledge_base_status` - Check knowledge base status
 
 ## Key Features
 
-- **Persistent knowledge base**: LLM-readable vault overview stored in vault
-- **Auto-generated titles**: Note titles are extracted from filenames
-- **Backlink validation**: Links are verified to exist before creation
-- **Frontmatter tags**: Tags are stored in YAML frontmatter
-- **Wikilinks**: Links use Obsidian's [[wikilink]] format
-- **Link traversal**: Explore note relationships up to 3 hops
+- **Onboarding**: Auto-detect vault patterns (PARA, Zettelkasten, etc.)
+- **Persistent memories**: Cross-session context storage
+- **Knowledge base**: Comprehensive vault overview for LLM context
+- **Backlink validation**: Links verified before creation
+- **Frontmatter tags**: Tags stored in YAML frontmatter
+- **Link traversal**: Explore relationships up to 3 hops
 - **Full-text search**: Search across all vault content
-- **Daily notes**: Timestamped entries with tags and links
-
-## Knowledge Base Workflow
-
-For best results, generate the knowledge base on first use:
-1. Call `refresh_vault_structure` to scan the vault
-2. Call `create_vault_knowledge_base` to create the persistent knowledge file
-3. Access via `vault://knowledge` resource in future sessions
-
-The knowledge base is stored at `.obsidian-brain/knowledge-base.md` and provides:
-- Folder structure tree
-- Tag taxonomy with counts
-- Hub notes (most connected)
-- Link patterns
-- Orphan notes list
 
 ## Configuration
 
@@ -121,6 +141,8 @@ register_tag_tools(server)
 register_search_tools(server)
 register_daily_tools(server)
 register_knowledge_tools(server)
+register_onboarding_tools(server)
+register_memory_tools(server)
 
 # Register all resources
 register_structure_resource(server)
