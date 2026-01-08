@@ -47,6 +47,7 @@ class ObsidianClient:
         host: str | None = None,
         port: int | None = None,
         verify_ssl: bool | None = None,
+        url: str | None = None,
     ):
         """
         Initialize the Obsidian client.
@@ -56,15 +57,28 @@ class ObsidianClient:
             host: API host. Defaults to OBSIDIAN_HOST env var or "127.0.0.1".
             port: API port. Defaults to OBSIDIAN_PORT env var or 27124.
             verify_ssl: Whether to verify SSL cert. Defaults to OBSIDIAN_VERIFY_SSL env var or False.
+            url: Full base URL override (e.g., "http://localhost:27124"). 
+                 Defaults to OBSIDIAN_URL env var. If set, overrides host/port.
         """
         self.api_key = api_key or os.getenv("OBSIDIAN_API_KEY", "")
-        self.host = host or os.getenv("OBSIDIAN_HOST", "127.0.0.1")
-        self.port = port or int(os.getenv("OBSIDIAN_PORT", "27124"))
+        
+        # Check for full URL override first
+        base_url_override = url or os.getenv("OBSIDIAN_URL")
+        
+        if base_url_override:
+            # Use full URL, strip trailing slash
+            self.base_url = base_url_override.rstrip("/")
+            self.host = ""
+            self.port = 0
+        else:
+            # Construct from host/port (original behavior)
+            self.host = host or os.getenv("OBSIDIAN_HOST", "127.0.0.1")
+            self.port = port or int(os.getenv("OBSIDIAN_PORT", "27124"))
+            self.base_url = f"https://{self.host}:{self.port}"
 
         verify_ssl_env = os.getenv("OBSIDIAN_VERIFY_SSL", "false").lower()
         self.verify_ssl = verify_ssl if verify_ssl is not None else verify_ssl_env == "true"
 
-        self.base_url = f"https://{self.host}:{self.port}"
         self._client: httpx.AsyncClient | None = None
 
     async def __aenter__(self) -> "ObsidianClient":
