@@ -29,7 +29,6 @@
   },
   "enableAllProjectMcpServers": true,
   "enabledMcpjsonServers": [
-    "shadcn",
     "obsidian-brain"
   ]
 }
