@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://obsidian.md/images/obsidian-logo-gradient.svg" alt="Obsidian Brain MCP" width="120" />
+  <img src="assets/Obsidian_Flow State.png" alt="Obsidian Brain MCP" width="120" />
 </p>
 
 <h1 align="center">Obsidian Brain MCP</h1>
@@ -50,7 +50,7 @@ Now your assistant can:
 ## 🎬 See It In Action
 
 <p align="center">
-  <img src="assets/demo.gif" alt="Obsidian Brain MCP Demo" width="800" />
+  <img src="assets/ObsidianMCPDemo.gif" alt="Obsidian Brain MCP Demo" width="800" />
 </p>
 
 <p align="center">
