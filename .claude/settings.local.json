@@ -24,7 +24,9 @@
       "mcp__serena__list_memories",
       "Bash(python -c:*)",
       "Bash(docker logs:*)",
-      "mcp__serena__search_for_pattern"
+      "mcp__serena__search_for_pattern",
+      "WebSearch",
+      "Bash(uv sync:*)"
     ]
   },
   "enableAllProjectMcpServers": true,

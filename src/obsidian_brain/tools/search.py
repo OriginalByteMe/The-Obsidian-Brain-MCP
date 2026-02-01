@@ -22,6 +22,8 @@ def register_search_tools(server: "MCPServer") -> None:
     async def search_content(
         query: str,
         context_length: int = 100,
+        include_content: bool = False,
+        max_results: int = 10,
     ) -> str:
         """
         Search for text across all notes in the vault.
@@ -31,9 +33,11 @@ def register_search_tools(server: "MCPServer") -> None:
         Args:
             query: Search query string (supports basic text matching)
             context_length: Characters of context around matches (default 100)
+            include_content: If True, fetch full content of matching notes (default False)
+            max_results: Maximum number of results to return (default 10)
 
         Returns:
-            JSON array of matches with file paths, snippets, and scores
+            JSON array of matches with file paths, snippets, scores, and optionally content
         """
         if not query or not query.strip():
             return json.dumps({
@@ -56,10 +60,11 @@ def register_search_tools(server: "MCPServer") -> None:
                         score = result.get("score", 0.0)
 
                         # Extract text from match objects if needed
+                        # API returns: {"match": {"start": N, "end": N}, "context": "...text..."}
                         match_texts = []
                         for m in snippets:
                             if isinstance(m, dict):
-                                match_texts.append(m.get("match", str(m)))
+                                match_texts.append(m.get("context", str(m)))
                             else:
                                 match_texts.append(str(m))
 
@@ -68,6 +73,18 @@ def register_search_tools(server: "MCPServer") -> None:
                             matches=match_texts,
                             score=score,
                         ).model_dump())
+
+                # Apply max_results limit
+                matches = matches[:max_results]
+
+                # Optionally fetch full content for each match
+                if include_content:
+                    for match in matches:
+                        try:
+                            note_data = await client.get_note(match["path"], include_metadata=False)
+                            match["content"] = note_data.get("content", "")
+                        except Exception:
+                            match["content"] = None
 
                 return json.dumps({
                     "success": True,
