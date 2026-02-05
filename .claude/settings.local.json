@@ -26,7 +26,10 @@
       "Bash(docker logs:*)",
       "mcp__serena__search_for_pattern",
       "WebSearch",
-      "Bash(uv sync:*)"
+      "Bash(uv sync:*)",
+      "Bash(docker compose run:*)",
+      "Bash(git add:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nRemove resource templates in favor of tools; migrate MCP config to UV\n\nResource templates \\(vault://note/{path}, vault://folder/{path}\\) don''t work\nreliably with FastMCP''s regex-based URI matching or MCP client parameter\ndiscovery. The existing get_note and list_vault_files tools already provide\nthe same functionality. Also migrates .mcp.json from Docker to direct UV\nexecution for faster startup and simpler configuration.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\nEOF\n\\)\")"
     ]
   },
   "enableAllProjectMcpServers": true,

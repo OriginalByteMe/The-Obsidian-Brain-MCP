@@ -10,7 +10,6 @@ from mcp_use.server import MCPServer
 from . import __version__
 from .resources.knowledge import register_knowledge_resource
 from .resources.structure import register_structure_resource
-from .resources.vault_access import register_vault_access_resources
 from .tools.daily import register_daily_tools
 from .tools.knowledge import register_knowledge_tools
 from .tools.links import register_link_tools
@@ -67,8 +66,6 @@ Store memories for: project context, user preferences, learnings, session summar
 - `vault://tags` - All tags with usage counts
 - `vault://stats` - Aggregate vault statistics
 - `vault://knowledge` - Persistent knowledge base (Markdown)
-- `vault://note/{path}` - Read a specific note by path (e.g., vault://note/Projects/MyNote.md)
-- `vault://folder/{path}` - List all notes in a folder recursively (e.g., vault://folder/Projects)
 
 ## Available Tools
 
@@ -150,7 +147,6 @@ register_memory_tools(server)
 # Register all resources
 register_structure_resource(server)
 register_knowledge_resource(server)
-register_vault_access_resources(server)
 
 
 def main():
