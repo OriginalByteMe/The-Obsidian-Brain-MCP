@@ -1,4 +1,38 @@
 {
   "description": "Obsidian Brain lifecycle hooks for session tracking and knowledge capture",
-  "hooks": {}
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/scripts/session-start.py",
+            "timeout": 5000,
+            "statusMessage": "Loading vault context..."
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/scripts/periodic-checkin.py",
+            "timeout": 3000
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "prompt",
+            "prompt": "Evaluate if this session contained noteworthy learnings, decisions, or accomplishments worth capturing in Obsidian. Noteworthy: bugs fixed, concepts learned, features built, decisions made. NOT noteworthy: simple questions, trivial edits, casual chat. If noteworthy, briefly describe what to capture. If not, respond: nothing noteworthy",
+            "model": "claude-haiku-4-5-20251001",
+            "timeout": 10000
+          }
+        ]
+      }
+    ]
+  }
 }

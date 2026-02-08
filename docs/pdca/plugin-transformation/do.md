@@ -9,6 +9,8 @@
 - **2026-02-08** Phase 1 completed — plugin.json, marketplace.json, hooks stub, .mcp.json updated, version bumped to 0.2.0
 - **2026-02-08** Phase 2 started
 - **2026-02-08** Phase 2 completed — brain_state.py, session.py (5 MCP tools), server.py registration
+- **2026-02-08** Phase 3 started
+- **2026-02-08** Phase 3 completed — session-start.py, periodic-checkin.py, hooks.json populated (stdlib fallback for httpx)
 
 ---
 
@@ -98,42 +100,36 @@ uv run python -c "from obsidian_brain.server import server; print('Server OK')"
 
 ## Phase 3: Hook Scripts
 
-**Status**: Not Started
+**Status**: Complete
 
 ### Task 3.1: Create session-start hook
 
-- [ ] Create `scripts/session-start.py`:
+- [x] Create `scripts/session-start.py`:
   - Parse stdin JSON for `session_id`
-  - Read vault config via `brain_state.read_vault_config()`
+  - Read vault config via `brain_state.read_vault_config()` (with stdlib fallback)
   - Check `autonomy.session_start_context` — exit if disabled
-  - Read today's daily note via direct HTTP
+  - Read today's daily note via stdlib urllib (no httpx dependency)
   - Initialize session state temp file
   - Output JSON with `additionalContext`
-- [ ] Verify with mock input:
-  ```bash
-  echo '{"session_id":"test","hook_event_name":"SessionStart"}' | python3 scripts/session-start.py
-  ```
+- [x] Verify with mock input: outputs valid JSON
 
 ### Task 3.2: Create periodic check-in hook
 
-- [ ] Create `scripts/periodic-checkin.py`:
+- [x] Create `scripts/periodic-checkin.py`:
   - Parse stdin JSON for `session_id`
   - Read session state for `last_checkin` timestamp
   - Read config for `checkin_interval_minutes` and autonomy setting
   - If disabled or interval not reached: exit 0 (no output)
   - If interval reached: update `last_checkin`, output check-in prompt JSON
-- [ ] Verify with mock input:
-  ```bash
-  echo '{"session_id":"test","hook_event_name":"Stop"}' | python3 scripts/periodic-checkin.py
-  ```
+- [x] Verify with mock input: exits silently when interval not reached
 
 ### Task 3.3: Populate hooks.json
 
-- [ ] Replace stub `hooks/hooks.json` with full configuration:
+- [x] Replace stub `hooks/hooks.json` with full configuration:
   - `SessionStart` → `session-start.py` (command type, 5s timeout)
   - `Stop[0]` → `periodic-checkin.py` (command type, 3s timeout)
   - `Stop[1]` → session-end prompt (prompt type, Haiku model, 10s timeout)
-- [ ] Verify: valid JSON, script paths use `${CLAUDE_PLUGIN_ROOT}`
+- [x] Verify: valid JSON, script paths use `${CLAUDE_PLUGIN_ROOT}`
 
 ### Phase 3 Verification
 
@@ -264,9 +260,8 @@ uv run ruff check src/ scripts/ tests/
 
 ## Learnings During Implementation
 
-> Fill in as implementation progresses.
-
-1. ...
+1. Hook scripts run as subprocesses outside the UV venv — cannot depend on httpx/yaml. Added stdlib urllib fallback in brain_state.py and session-start.py.
+2. Python module filenames must use underscores, not hyphens. Renamed `brain-state.py` → `brain_state.py`.
 
 ---
 

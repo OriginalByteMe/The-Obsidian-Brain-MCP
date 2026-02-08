@@ -70,8 +70,16 @@ def read_vault_config(
     - OBSIDIAN_API_KEY
     - OBSIDIAN_HOST (default: 127.0.0.1)
     - OBSIDIAN_PORT (default: 27124)
+
+    Gracefully returns empty dict if httpx/yaml are not available
+    (e.g., when running outside the UV venv).
     """
-    import httpx
+    try:
+        import httpx
+        import yaml
+    except ImportError:
+        # Running outside UV venv — fall back to urllib
+        return _read_vault_config_stdlib(api_key, host, port)
 
     api_key = api_key or os.getenv("OBSIDIAN_API_KEY", "")
     host = host or os.getenv("OBSIDIAN_HOST", "127.0.0.1")
@@ -85,9 +93,49 @@ def read_vault_config(
     try:
         resp = httpx.get(url, headers=headers, verify=False, timeout=3.0)
         if resp.status_code == 200:
-            import yaml
-
             return yaml.safe_load(resp.text) or {}
+    except Exception:
+        pass
+    return {}
+
+
+def _read_vault_config_stdlib(
+    api_key: str | None = None,
+    host: str | None = None,
+    port: int | None = None,
+) -> dict:
+    """Fallback config reader using only stdlib (urllib + json-based parsing)."""
+    import ssl
+    import urllib.request
+
+    api_key = api_key or os.getenv("OBSIDIAN_API_KEY", "")
+    host = host or os.getenv("OBSIDIAN_HOST", "127.0.0.1")
+    port = port or int(os.getenv("OBSIDIAN_PORT", "27124"))
+
+    url = f"https://{host}:{port}/vault/Obsidian Brain/config.yml"
+    req = urllib.request.Request(
+        url,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Accept": "text/markdown",
+        },
+    )
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+
+    try:
+        with urllib.request.urlopen(req, timeout=3, context=ctx) as resp:
+            if resp.status == 200:
+                text = resp.read().decode("utf-8")
+                # Try yaml first, fall back to empty
+                try:
+                    import yaml
+
+                    return yaml.safe_load(text) or {}
+                except ImportError:
+                    # No yaml available — return empty (config will use defaults)
+                    return {}
     except Exception:
         pass
     return {}
