@@ -16,6 +16,7 @@ from .tools.links import register_link_tools
 from .tools.memory import register_memory_tools
 from .tools.onboarding import register_onboarding_tools
 from .tools.search import register_search_tools
+from .tools.session import register_session_tools
 from .tools.tags import register_tag_tools
 from .tools.vault import register_vault_tools
 
@@ -143,6 +144,7 @@ register_daily_tools(server)
 register_knowledge_tools(server)
 register_onboarding_tools(server)
 register_memory_tools(server)
+register_session_tools(server)
 
 # Register all resources
 register_structure_resource(server)

@@ -7,6 +7,8 @@
 
 - **2026-02-08** Phase 1 started
 - **2026-02-08** Phase 1 completed — plugin.json, marketplace.json, hooks stub, .mcp.json updated, version bumped to 0.2.0
+- **2026-02-08** Phase 2 started
+- **2026-02-08** Phase 2 completed — brain_state.py, session.py (5 MCP tools), server.py registration
 
 ---
 
@@ -55,33 +57,33 @@ uv run python -c "from obsidian_brain import __version__; assert __version__ == 
 
 ## Phase 2: Session State & Configuration Tools
 
-**Status**: Not Started
+**Status**: Complete
 
 ### Task 2.1: Create session state manager
 
-- [ ] Create `scripts/brain-state.py` with:
+- [x] Create `scripts/brain_state.py` (renamed from brain-state.py for Python import compatibility) with:
   - `get_state_path(session_id)` — temp file path
   - `read_state(session_id)` — atomic read with defaults
   - `write_state(session_id, state)` — atomic write with file locking
   - `read_vault_config()` — direct HTTP config read
   - `DEFAULT_AUTONOMY` and `DEFAULT_PLUGIN` constants
-- [ ] Verify: `python3 -c "import sys; sys.path.insert(0,'scripts'); from brain_state import read_state; print(read_state('test'))"`
+- [x] Verify: module imports and returns default state
 
 ### Task 2.2: Create session MCP tools
 
-- [ ] Create `src/obsidian_brain/tools/session.py` with `register_session_tools()`:
+- [x] Create `src/obsidian_brain/tools/session.py` with `register_session_tools()`:
   - `get_brain_config()` — reads config, merges with defaults
   - `update_brain_config(key, value)` — dot-notation config update
   - `get_session_state()` — reads session tracking state
   - `record_session_activity(activity_type, summary, note_paths)` — tracks activity + optional daily note
   - `append_to_brag_doc(category, description, links)` — dedup + append to brag doc
-- [ ] Verify: `uv run python -c "from obsidian_brain.tools.session import register_session_tools; print('OK')"`
+- [x] Verify: module imports cleanly, ruff passes
 
 ### Task 2.3: Register session tools in server
 
-- [ ] Add import in `server.py`: `from .tools.session import register_session_tools`
-- [ ] Add registration: `register_session_tools(server)` after existing registrations
-- [ ] Verify: server imports without error, tool count increased
+- [x] Add import in `server.py`: `from .tools.session import register_session_tools`
+- [x] Add registration: `register_session_tools(server)` after existing registrations
+- [x] Verify: server imports without error
 
 ### Phase 2 Verification
 
