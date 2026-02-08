@@ -144,6 +144,52 @@ Every book you read strengthens your second brain.
 | 🧭 **Vault Onboarding** | AI learns your vault's structure, conventions, and patterns |
 | 💾 **Persistent Memory** | Cross-session context that remembers previous interactions |
 | 📊 **Knowledge Base** | Generate comprehensive vault overviews for deep AI understanding |
+| 🔌 **Claude Code Plugin** | Install as a plugin with skills, hooks, and brag doc tracking |
+
+---
+
+## 🔌 Claude Code Plugin
+
+Obsidian Brain is also available as a **Claude Code plugin** that adds proactive knowledge capture to your coding sessions.
+
+### Plugin Installation
+
+```bash
+# Add the marketplace
+/plugin marketplace add OriginalByteMe/The-Obsidian-Brain-MCP
+
+# Install the plugin
+/plugin install obsidian-brain
+```
+
+### Available Skills
+
+| Skill | Description |
+|-------|-------------|
+| `/document-it [topic]` | Document a function, decision, or concept as a structured vault note |
+| `/capture-learning [focus]` | Capture session learnings as a structured learning note |
+| `/review-session` | Summarize the session and log to daily note |
+| `/brain-status` | Show vault connection, today's activity, and configuration |
+| `/brain-config [setting] [value]` | View or change plugin autonomy settings |
+
+### Lifecycle Hooks
+
+The plugin automatically:
+- **Session Start**: Loads vault context and today's daily note summary
+- **Periodic Check-in**: Reminds to capture notes after a configurable interval (default: 30 min)
+- **Session End**: Evaluates if the session contained noteworthy learnings
+
+### Autonomy Configuration
+
+Control how proactive the plugin is with `/brain-config`:
+
+| Setting | Default | Options |
+|---------|---------|---------|
+| `autonomy.session_start_context` | `silent` | `silent`, `prompt`, `disabled` |
+| `autonomy.session_end_learning_capture` | `prompt` | `silent`, `prompt`, `disabled` |
+| `autonomy.session_end_daily_log` | `silent` | `silent`, `prompt`, `disabled` |
+| `autonomy.brag_doc_update` | `prompt` | `silent`, `prompt`, `disabled` |
+| `autonomy.periodic_checkin` | `prompt` | `silent`, `prompt`, `disabled` |
 
 ---
 
@@ -442,6 +488,16 @@ OBSIDIAN_API_KEY=your-key obsidian-brain
 | `list_memories` | List all stored cross-session memories |
 | `read_memory` / `write_memory` | Read or write persistent memory |
 | `edit_memory` / `delete_memory` | Modify or remove memories |
+
+### 🔌 Session & Plugin (Plugin Mode)
+
+| Tool | Description |
+|------|-------------|
+| `get_brain_config` | Read plugin configuration (autonomy + plugin settings) |
+| `update_brain_config` | Update a configuration value with dot-notation key |
+| `get_session_state` | Get current session tracking state |
+| `record_session_activity` | Record an activity for deduplication and logging |
+| `append_to_brag_doc` | Add an entry to the brag document |
 
 ---
 

@@ -355,6 +355,26 @@ class OnboardingManager:
                 "common_keys": analysis.common_frontmatter_keys,
                 "patterns": analysis.frontmatter_patterns,
             },
+            "autonomy": {
+                "session_start_context": "silent",
+                "session_end_learning_capture": "prompt",
+                "session_end_daily_log": "silent",
+                "brag_doc_update": "prompt",
+                "periodic_checkin": "prompt",
+            },
+            "plugin": {
+                "checkin_interval_minutes": 30,
+                "daily_note_heading": "## Claude Code Sessions",
+                "brag_doc_path": None,
+                "brag_doc_categories": [
+                    "Features Built",
+                    "Bugs Fixed",
+                    "Improvements",
+                    "Key Learnings",
+                ],
+                "learning_note_folder": None,
+                "session_log_format": "summary",
+            },
         }
 
         return yaml.dump(config, default_flow_style=False, sort_keys=False)

@@ -116,6 +116,34 @@ Store memories for: project context, user preferences, learnings, session summar
 - `create_vault_knowledge_base` - Generate persistent vault overview
 - `get_knowledge_base_status` - Check knowledge base status
 
+### Session & Plugin
+- `get_brain_config` - Get plugin configuration (autonomy + plugin settings)
+- `update_brain_config` - Update a config value (dot-notation key)
+- `get_session_state` - Get current session tracking state
+- `record_session_activity` - Record an activity for deduplication and logging
+- `append_to_brag_doc` - Add an entry to the brag document
+
+## Plugin Features
+
+When running as a Claude Code plugin, Obsidian Brain provides:
+
+### Skills (Slash Commands)
+- `/document-it [topic]` - Document a function, decision, or concept
+- `/capture-learning [focus]` - Capture session learnings as a note
+- `/review-session` - Summarize and log the session
+- `/brain-status` - Show vault connection, activity, and config
+- `/brain-config [setting] [value]` - View/change plugin settings
+
+### Lifecycle Hooks
+- **Session Start**: Loads vault context and today's daily note summary
+- **Periodic Check-in**: Reminds to capture notes after configurable interval
+- **Session End**: Evaluates if the session contained noteworthy content
+
+### Brag Doc
+The plugin can maintain a brag document that accumulates accomplishments
+automatically. Use `append_to_brag_doc` or the `/capture-learning` skill.
+Entries are deduplicated to prevent repeats.
+
 ## Key Features
 
 - **Onboarding**: Auto-detect vault patterns (PARA, Zettelkasten, etc.)
