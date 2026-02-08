@@ -11,6 +11,8 @@
 - **2026-02-08** Phase 2 completed — brain_state.py, session.py (5 MCP tools), server.py registration
 - **2026-02-08** Phase 3 started
 - **2026-02-08** Phase 3 completed — session-start.py, periodic-checkin.py, hooks.json populated (stdlib fallback for httpx)
+- **2026-02-08** Phase 4 started
+- **2026-02-08** Phase 4 completed — 5 skills created (document-it, capture-learning, review-session, brain-status, brain-config)
 
 ---
 
@@ -145,42 +147,32 @@ echo '{"session_id":"t","hook_event_name":"Stop"}' | python3 scripts/periodic-ch
 
 ## Phase 4: Skills
 
-**Status**: Not Started
+**Status**: Complete
 
 ### Task 4.1: Create /document-it skill
 
-- [ ] Create `skills/document-it/SKILL.md` with:
-  - Frontmatter: name, description, argument-hint, user-invocable, allowed-tools
-  - Body: purpose, prerequisites (config + conventions), workflow (6 steps), output format, convention rules
-- [ ] Verify: valid YAML frontmatter
+- [x] Create `skills/document-it/SKILL.md` with 7 allowed tools
+- [x] Verify: valid YAML frontmatter
 
 ### Task 4.2: Create /capture-learning skill
 
-- [ ] Create `skills/capture-learning/SKILL.md` with:
-  - Frontmatter: name, description, argument-hint, user-invocable, allowed-tools
-  - Body: transcript analysis, learning note structure (Context/What/Why/Related), daily note + brag doc integration
-- [ ] Verify: valid YAML frontmatter
+- [x] Create `skills/capture-learning/SKILL.md` with 9 allowed tools
+- [x] Verify: valid YAML frontmatter
 
 ### Task 4.3: Create /review-session skill
 
-- [ ] Create `skills/review-session/SKILL.md` with:
-  - Frontmatter: name, description, user-invocable, allowed-tools
-  - Body: session state check, transcript analysis, daily note summary format, brag doc integration
-- [ ] Verify: valid YAML frontmatter
+- [x] Create `skills/review-session/SKILL.md` with 8 allowed tools
+- [x] Verify: valid YAML frontmatter
 
 ### Task 4.4: Create /brain-status skill
 
-- [ ] Create `skills/brain-status/SKILL.md` with:
-  - Frontmatter: name, description, user-invocable, allowed-tools
-  - Body: vault check, daily note summary, session state, memories, config display
-- [ ] Verify: valid YAML frontmatter
+- [x] Create `skills/brain-status/SKILL.md` with 6 allowed tools
+- [x] Verify: valid YAML frontmatter
 
 ### Task 4.5: Create /brain-config skill
 
-- [ ] Create `skills/brain-config/SKILL.md` with:
-  - Frontmatter: name, description, argument-hint, user-invocable, allowed-tools
-  - Body: display current config, parse arguments, validate values, apply changes
-- [ ] Verify: valid YAML frontmatter
+- [x] Create `skills/brain-config/SKILL.md` with 2 allowed tools
+- [x] Verify: valid YAML frontmatter
 
 ### Phase 4 Verification
 
