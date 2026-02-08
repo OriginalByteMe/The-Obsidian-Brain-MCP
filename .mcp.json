@@ -2,8 +2,15 @@
   "mcpServers": {
     "obsidian-brain": {
       "type": "stdio",
-      "command": "uv",
-      "args": ["run", "--directory", "/home/noahr/projects/The-Obsidian-Brain-MCP", "--env-file", ".env", "python", "-m", "obsidian_brain.server"]
+      "command": "uvx",
+      "args": [
+        "--from",
+        "git+https://github.com/OriginalByteMe/The-Obsidian-Brain-MCP",
+        "obsidian-brain"
+      ],
+      "env": {
+        "OBSIDIAN_API_KEY": "${OBSIDIAN_API_KEY}"
+      }
     }
   }
 }

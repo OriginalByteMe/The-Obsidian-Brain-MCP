@@ -1,0 +1,14 @@
+{
+  "name": "obsidian-brain",
+  "version": "0.2.0",
+  "description": "Intelligent Obsidian vault companion — captures learnings, logs sessions, and maintains your knowledge base as you code",
+  "author": {
+    "name": "Noah R",
+    "url": "https://github.com/OriginalByteMe"
+  },
+  "repository": "https://github.com/OriginalByteMe/The-Obsidian-Brain-MCP",
+  "license": "MIT",
+  "keywords": ["obsidian", "knowledge-management", "notes", "daily-notes", "brag-doc"],
+  "mcpServers": "./.mcp.json",
+  "hooks": "./hooks/hooks.json"
+}

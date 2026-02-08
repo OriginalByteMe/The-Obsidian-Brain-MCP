@@ -1,0 +1,21 @@
+{
+  "name": "obsidian-brain-marketplace",
+  "owner": {
+    "name": "Noah R",
+    "url": "https://github.com/OriginalByteMe"
+  },
+  "metadata": {
+    "description": "Obsidian Brain — intelligent vault companion for Claude Code",
+    "version": "1.0.0"
+  },
+  "plugins": [
+    {
+      "name": "obsidian-brain",
+      "source": ".",
+      "description": "MCP server, skills, and hooks for Obsidian vault management",
+      "version": "0.2.0",
+      "category": "productivity",
+      "tags": ["obsidian", "knowledge-management", "notes"]
+    }
+  ]
+}
