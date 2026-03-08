@@ -1,7 +1,7 @@
 """
 In-memory cache for vault structure with on-demand refresh.
 
-Provides efficient access to vault metadata without repeated API calls.
+Provides efficient access to vault metadata without repeated CLI calls.
 The cache must be explicitly refreshed via the refresh_vault_structure tool.
 """
 
@@ -18,7 +18,7 @@ from .models import (
 from .utils.wikilinks import extract_wikilinks
 
 if TYPE_CHECKING:
-    from .client import ObsidianClient
+    from .protocol import VaultClient
 
 
 class CacheNotInitializedError(Exception):
@@ -43,9 +43,8 @@ class VaultCache:
 
     Usage:
         cache = VaultCache()
-        async with ObsidianClient() as client:
-            await cache.refresh(client)
-            structure = cache.get_structure()
+        await cache.refresh(client)
+        structure = cache.get_structure()
     """
 
     def __init__(self):
@@ -161,19 +160,19 @@ class VaultCache:
 
         return [note.path for note in self._structure.notes if tag in note.tags]
 
-    async def refresh(self, client: "ObsidianClient") -> VaultStructure:
+    async def refresh(self, client: "VaultClient") -> VaultStructure:
         """
         Rebuild structure from vault.
 
         This is a potentially slow operation for large vaults as it:
-        1. Recursively lists all files
-        2. Fetches metadata for each note
+        1. Bulk-lists all files via CLI (single call)
+        2. Fetches metadata for each note with bounded concurrency
         3. Extracts wikilinks from content
         4. Builds backlink index
         5. Computes statistics
 
         Args:
-            client: ObsidianClient instance to use for API calls
+            client: VaultClient instance to use for vault operations
 
         Returns:
             The refreshed VaultStructure
@@ -182,50 +181,26 @@ class VaultCache:
             self._structure = await self._build_structure(client)
             return self._structure
 
-    async def _build_structure(self, client: "ObsidianClient") -> VaultStructure:
+    async def _build_structure(self, client: "VaultClient") -> VaultStructure:
         """Internal method to build complete structure."""
-        # Step 1: Get all files recursively
-        all_entries = await self._get_directory_tree(client, "/")
-        folders = all_entries["folders"]
-        file_paths = all_entries["files"]
+        # Step 1: Get all files via bulk listing (single CLI call)
+        file_paths = await client.get_all_files("/")
 
-        # Step 2: Fetch metadata for all markdown files
-        notes: list[NoteMetadata] = []
+        # Step 2: Build folder hierarchy from file paths
+        folders = self._build_folder_hierarchy(file_paths)
+
+        # Step 3: Fetch metadata for all markdown files with bounded concurrency
         md_files = [f for f in file_paths if f.endswith(".md")]
+        notes = await self._fetch_notes_concurrent(client, md_files)
 
-        for file_path in md_files:
-            try:
-                note_data = await client.get_note(file_path, include_metadata=True)
-                content = note_data.get("content", "")
-
-                # Extract wikilinks from content
-                outgoing_links = extract_wikilinks(content)
-
-                # Extract title from filename or H1
-                title = self._extract_title(file_path, content)
-
-                note = NoteMetadata(
-                    path=file_path,
-                    title=title,
-                    tags=note_data.get("tags", []),
-                    outgoing_links=outgoing_links,
-                    incoming_links=[],  # Will be populated by backlink index
-                    frontmatter=note_data.get("frontmatter", {}),
-                    modified=note_data.get("modified"),
-                )
-                notes.append(note)
-            except Exception:
-                # Skip notes that can't be read
-                continue
-
-        # Step 3: Build backlink index
+        # Step 4: Build backlink index
         self._backlink_index = self._build_backlink_index(notes, md_files)
 
-        # Step 4: Populate incoming_links from backlink index
+        # Step 5: Populate incoming_links from backlink index
         for note in notes:
             note.incoming_links = self._backlink_index.get(note.path, [])
 
-        # Step 5: Compute statistics
+        # Step 6: Compute statistics
         all_tags = set()
         total_links = 0
         orphan_count = 0
@@ -251,8 +226,71 @@ class VaultCache:
             refreshed_at=datetime.now(),
         )
 
+    async def _fetch_notes_concurrent(
+        self, client: "VaultClient", md_files: list[str]
+    ) -> list[NoteMetadata]:
+        """Fetch note metadata with semaphore-bounded concurrency."""
+        semaphore = asyncio.Semaphore(10)
+        notes: list[NoteMetadata] = []
+
+        async def fetch_one(file_path: str) -> NoteMetadata | None:
+            async with semaphore:
+                try:
+                    note_data = await client.get_note(file_path, include_metadata=True)
+                    content = note_data.get("content", "")
+                    outgoing_links = extract_wikilinks(content)
+                    title = self._extract_title(file_path, content)
+
+                    return NoteMetadata(
+                        path=file_path,
+                        title=title,
+                        tags=note_data.get("tags", []),
+                        outgoing_links=outgoing_links,
+                        incoming_links=[],
+                        frontmatter=note_data.get("frontmatter", {}),
+                        modified=note_data.get("modified"),
+                    )
+                except Exception:
+                    return None
+
+        tasks = [fetch_one(fp) for fp in md_files]
+        results = await asyncio.gather(*tasks)
+        notes = [r for r in results if r is not None]
+        return notes
+
+    def _build_folder_hierarchy(self, file_paths: list[str]) -> list[FolderNode]:
+        """Build folder tree from flat file path list."""
+        # Collect all unique folder paths
+        folder_paths: set[str] = set()
+        for fp in file_paths:
+            parts = fp.split("/")
+            # Build all ancestor folder paths
+            for i in range(1, len(parts)):
+                folder_paths.add("/".join(parts[:i]))
+
+        if not folder_paths:
+            return []
+
+        # Build tree from sorted paths
+        nodes: dict[str, FolderNode] = {}
+        root_folders: list[FolderNode] = []
+
+        for fp in sorted(folder_paths):
+            name = fp.split("/")[-1]
+            node = FolderNode(name=name, path=fp + "/", children=[])
+            nodes[fp] = node
+
+            # Find parent
+            parent_path = "/".join(fp.split("/")[:-1])
+            if parent_path and parent_path in nodes:
+                nodes[parent_path].children.append(node)
+            else:
+                root_folders.append(node)
+
+        return root_folders
+
     async def _get_directory_tree(
-        self, client: "ObsidianClient", path: str
+        self, client: "VaultClient", path: str
     ) -> dict[str, list]:
         """
         Recursively build directory tree and collect files.
