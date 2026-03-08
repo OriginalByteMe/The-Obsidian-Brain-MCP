@@ -11,18 +11,18 @@
 - [ ] **SDK-02**: All existing tool registrations work with FastMCP decorator API
 - [ ] **SDK-03**: All existing resource registrations work with FastMCP
 - [ ] **SDK-04**: stdio transport works identically to current behavior
-- [ ] **SDK-05**: `mcp-use`, `httpx`, and `pytest-httpx` removed from dependencies
+- [x] **SDK-05**: `mcp-use`, `httpx`, and `pytest-httpx` removed from dependencies
 
 ### CLI Backend
 
-- [ ] **CLI-01**: `VaultClient` Protocol defines the interface both REST and CLI backends implement
-- [ ] **CLI-02**: `ObsidianCLIClient` executes vault operations via Obsidian CLI subprocess calls
-- [ ] **CLI-03**: All CLI subprocess calls are async (`asyncio.create_subprocess_exec`)
-- [ ] **CLI-04**: CLI output parsing is isolated in dedicated parser module (not in tool handlers)
-- [ ] **CLI-05**: All subprocess calls have explicit timeouts (default 30s)
-- [ ] **CLI-06**: Note paths are sanitized before CLI invocation (no command injection)
+- [x] **CLI-01**: `VaultClient` Protocol defines the interface both REST and CLI backends implement
+- [x] **CLI-02**: `ObsidianCLIClient` executes vault operations via Obsidian CLI subprocess calls
+- [x] **CLI-03**: All CLI subprocess calls are async (`asyncio.create_subprocess_exec`)
+- [x] **CLI-04**: CLI output parsing is isolated in dedicated parser module (not in tool handlers)
+- [x] **CLI-05**: All subprocess calls have explicit timeouts (default 30s)
+- [x] **CLI-06**: Note paths are sanitized before CLI invocation (no command injection)
 - [ ] **CLI-07**: Environment-based backend selection (`OBSIDIAN_BACKEND=cli|rest`)
-- [ ] **CLI-08**: CLI client detects Obsidian CLI binary availability on startup
+- [x] **CLI-08**: CLI client detects Obsidian CLI binary availability on startup
 
 ### Tool Migration
 

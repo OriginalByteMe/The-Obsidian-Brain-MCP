@@ -4,14 +4,14 @@ milestone: v1.0
 milestone_name: milestone
 status: executing
 stopped_at: Completed 01-00-PLAN.md
-last_updated: "2026-03-08T05:18:08.613Z"
+last_updated: "2026-03-08T05:22:24.793Z"
 last_activity: 2026-03-08 -- Completed plan 01-00 (pre-migration snapshot tests)
 progress:
   total_phases: 4
   completed_phases: 0
   total_plans: 5
-  completed_plans: 1
-  percent: 0
+  completed_plans: 2
+  percent: 40
 ---
 
 # Project State
@@ -26,28 +26,28 @@ See: .planning/PROJECT.md (updated 2026-03-08)
 ## Current Position
 
 Phase: 1 of 4 (CLI Migration)
-Plan: 1 of 5 in current phase
+Plan: 2 of 5 in current phase
 Status: Executing
-Last activity: 2026-03-08 -- Completed plan 01-00 (pre-migration snapshot tests)
+Last activity: 2026-03-08 -- Completed plan 01-01 (foundation: protocol, CLI client, parsers, exceptions)
 
-Progress: [##........] 20%
+Progress: [████......] 40%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 1
-- Average duration: 4min
-- Total execution time: 0.07 hours
+- Total plans completed: 2
+- Average duration: 6min
+- Total execution time: 0.20 hours
 
 **By Phase:**
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
-| 01-cli-migration | 1 | 4min | 4min |
+| 01-cli-migration | 2 | 12min | 6min |
 
 **Recent Trend:**
-- Last 5 plans: 4min
-- Trend: starting
+- Last 5 plans: 4min, 8min
+- Trend: ramping up
 
 *Updated after each plan completion*
 
@@ -63,6 +63,10 @@ Recent decisions affecting current work:
 - [Roadmap]: Agent Memory and Vault Learning merged into Phase 4 (both depend on plugin + MCP server, both about agent learning)
 - [01-00]: Recursive shape validator with sentinel types for flexible contract testing
 - [01-00]: Captured shapes as Python dicts-of-types rather than JSON Schema
+- [01-01]: VaultClient Protocol uses runtime_checkable for isinstance conformance checks
+- [01-01]: Parsers accept both dict and JSON string inputs for flexibility with unknown CLI output shapes
+- [01-01]: CLINotFoundError separate from ObsidianCLIError (missing binary is not a CLI execution failure)
+- [01-01]: Path sanitization via null byte rejection + structural safety from list-form exec
 
 ### Pending Todos
 
@@ -76,6 +80,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-08T05:17:27Z
-Stopped at: Completed 01-00-PLAN.md
-Resume file: .planning/phases/01-cli-migration/01-00-SUMMARY.md
+Last session: 2026-03-08T05:21:19Z
+Stopped at: Completed 01-01-PLAN.md
+Resume file: .planning/phases/01-cli-migration/01-01-SUMMARY.md
