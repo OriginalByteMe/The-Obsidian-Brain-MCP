@@ -18,10 +18,11 @@ REMOVED tools (not tested):
 import json
 from datetime import datetime
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from obsidian_brain.exceptions import NoteNotFoundError
 from tests.test_snapshots import (
     ANY_DICT,
     ANY_VALUE,
@@ -127,25 +128,20 @@ class MockObsidianClient:
                 "score": 1.5,
             }
         ])
-        self.search_dql = AsyncMock(return_value=[])
-        self.search_jsonlogic = AsyncMock(return_value=[])
-        self.get_periodic = AsyncMock(return_value={
+        self.get_daily_note = AsyncMock(return_value={
             "content": "# Daily\n\nToday's note",
             "tags": ["daily"],
             "frontmatter": {"date": "2024-01-15"},
         })
-        self.append_periodic = AsyncMock()
+        self.append_daily = AsyncMock()
+        self.get_tags = AsyncMock(return_value={"test": 5, "example": 3})
+        self.get_backlinks = AsyncMock(return_value=["note1.md", "note2.md"])
+        self.get_links = AsyncMock(return_value=["other.md", "project.md"])
         self.get_all_files = AsyncMock(return_value=[
             ".obsidian-brain/config.yml",
             ".obsidian-brain/memories/vault-overview.md",
             "test.md",
         ])
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *args):
-        pass
 
 
 def _create_mock_client():
@@ -211,7 +207,7 @@ class MockMCPServer:
 # Test helpers
 # ---------------------------------------------------------------------------
 
-def _register_all_tools(server: MockMCPServer) -> None:
+def _register_all_tools(server: MockMCPServer, client: MockObsidianClient) -> None:
     """Register all tool modules with the mock server."""
     from obsidian_brain.tools.vault import register_vault_tools
     from obsidian_brain.tools.links import register_link_tools
@@ -222,21 +218,21 @@ def _register_all_tools(server: MockMCPServer) -> None:
     from obsidian_brain.tools.memory import register_memory_tools
     from obsidian_brain.tools.onboarding import register_onboarding_tools
 
-    register_vault_tools(server)
-    register_link_tools(server)
-    register_tag_tools(server)
-    register_search_tools(server)
-    register_daily_tools(server)
-    register_knowledge_tools(server)
-    register_memory_tools(server)
-    register_onboarding_tools(server)
+    register_vault_tools(server, client)
+    register_link_tools(server, client)
+    register_tag_tools(server, client)
+    register_search_tools(server, client)
+    register_daily_tools(server, client)
+    register_knowledge_tools(server, client)
+    register_memory_tools(server, client)
+    register_onboarding_tools(server, client)
 
 
 @pytest.fixture()
-def mock_server():
+def mock_server(mock_client):
     """Create a mock server with all tools registered."""
     server = MockMCPServer()
-    _register_all_tools(server)
+    _register_all_tools(server, mock_client)
     return server
 
 
@@ -261,16 +257,14 @@ class TestToolRegistration:
         """All 29 kept tools should be registered."""
         registered = set(mock_server.tools.keys())
         expected = set(FROZEN_SHAPES.keys())
-        # The server also registers removed tools -- that's fine,
-        # we just need kept tools to be present
         missing = expected - registered
         assert not missing, f"Missing tool registrations: {missing}"
 
     def test_removed_tools_identified(self, mock_server):
-        """Removed tools should be registered but excluded from shapes."""
+        """Removed tools should not be registered after the CLI migration."""
         for tool_name in REMOVED_TOOLS:
-            assert tool_name in mock_server.tools, (
-                f"Removed tool '{tool_name}' should still be registered in pre-migration code"
+            assert tool_name not in mock_server.tools, (
+                f"Removed tool '{tool_name}' should not be registered"
             )
             assert tool_name not in FROZEN_SHAPES, (
                 f"Removed tool '{tool_name}' must not be in FROZEN_SHAPES"
@@ -286,56 +280,52 @@ class TestVaultToolShapes:
 
     @pytest.mark.asyncio
     async def test_list_vault_files_shape(self, mock_server, mock_client):
-        with patch("obsidian_brain.tools.vault.ObsidianClient", return_value=mock_client):
-            result = await mock_server.tools["list_vault_files"](path="/")
+        result = await mock_server.tools["list_vault_files"](path="/")
         assert isinstance(result, str)
         data = json.loads(result)
         assert_matches_shape(data, FROZEN_SHAPES["list_vault_files"])
 
     @pytest.mark.asyncio
     async def test_get_note_shape(self, mock_server, mock_client):
-        with patch("obsidian_brain.tools.vault.ObsidianClient", return_value=mock_client):
-            result = await mock_server.tools["get_note"](path="test.md")
+        result = await mock_server.tools["get_note"](path="test.md")
         assert isinstance(result, str)
         data = json.loads(result)
         assert_matches_shape(data, FROZEN_SHAPES["get_note"])
 
     @pytest.mark.asyncio
     async def test_create_note_shape(self, mock_server, mock_client):
-        with patch("obsidian_brain.tools.vault.ObsidianClient", return_value=mock_client):
-            result = await mock_server.tools["create_note"](
-                path="New/Note.md", content="Hello", tags=["test"], backlinks=[]
-            )
+        result = await mock_server.tools["create_note"](
+            path="New/Note.md", content="Hello", tags=["test"], backlinks=[]
+        )
         assert isinstance(result, str)
         data = json.loads(result)
         assert_matches_shape(data, FROZEN_SHAPES["create_note"])
 
     @pytest.mark.asyncio
     async def test_update_note_shape(self, mock_server, mock_client):
-        with patch("obsidian_brain.tools.vault.ObsidianClient", return_value=mock_client):
-            result = await mock_server.tools["update_note"](
-                path="test.md", content="Updated"
-            )
+        result = await mock_server.tools["update_note"](
+            path="test.md", content="Updated"
+        )
         assert isinstance(result, str)
         data = json.loads(result)
         assert_matches_shape(data, FROZEN_SHAPES["update_note"])
 
     @pytest.mark.asyncio
     async def test_append_to_note_shape(self, mock_server, mock_client):
-        with patch("obsidian_brain.tools.vault.ObsidianClient", return_value=mock_client):
-            result = await mock_server.tools["append_to_note"](
-                path="test.md", content="More text"
-            )
+        result = await mock_server.tools["append_to_note"](
+            path="test.md", content="More text"
+        )
         assert isinstance(result, str)
         data = json.loads(result)
         assert_matches_shape(data, FROZEN_SHAPES["append_to_note"])
 
     @pytest.mark.asyncio
     async def test_refresh_vault_structure_shape(self, mock_server, mock_cache):
-        with patch("obsidian_brain.tools.vault.ObsidianClient") as MockCls, \
-             patch("obsidian_brain.tools.vault.vault_cache", mock_cache):
-            mock_inst = _create_mock_client()
-            MockCls.return_value = mock_inst
+        mock_cache.get_structure.return_value.notes = [
+            MagicMock(path="test.md", outgoing_links=["note1.md"], tags=["test"])
+        ]
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr("obsidian_brain.tools.vault.vault_cache", mock_cache)
             result = await mock_server.tools["refresh_vault_structure"]()
         assert isinstance(result, str)
         data = json.loads(result)
@@ -343,8 +333,7 @@ class TestVaultToolShapes:
 
     @pytest.mark.asyncio
     async def test_delete_note_shape(self, mock_server, mock_client):
-        with patch("obsidian_brain.tools.vault.ObsidianClient", return_value=mock_client):
-            result = await mock_server.tools["delete_note"](path="test.md")
+        result = await mock_server.tools["delete_note"](path="test.md")
         assert isinstance(result, str)
         data = json.loads(result)
         assert_matches_shape(data, FROZEN_SHAPES["delete_note"])
@@ -365,17 +354,17 @@ class TestLinkToolShapes:
             "tags": [],
             "frontmatter": {},
         }
-        with patch("obsidian_brain.tools.links.ObsidianClient", return_value=mock_client):
-            result = await mock_server.tools["add_backlink"](
-                source_path="test.md", target_note="Other Note"
-            )
+        result = await mock_server.tools["add_backlink"](
+            source_path="test.md", target_note="Other Note"
+        )
         assert isinstance(result, str)
         data = json.loads(result)
         assert_matches_shape(data, FROZEN_SHAPES["add_backlink"])
 
     @pytest.mark.asyncio
     async def test_get_backlinks_shape(self, mock_server, mock_cache):
-        with patch("obsidian_brain.tools.links.vault_cache", mock_cache):
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr("obsidian_brain.tools.links.vault_cache", mock_cache)
             result = await mock_server.tools["get_backlinks"](path="test.md")
         assert isinstance(result, str)
         data = json.loads(result)
@@ -383,15 +372,15 @@ class TestLinkToolShapes:
 
     @pytest.mark.asyncio
     async def test_get_outgoing_links_shape(self, mock_server, mock_client):
-        with patch("obsidian_brain.tools.links.ObsidianClient", return_value=mock_client):
-            result = await mock_server.tools["get_outgoing_links"](path="test.md")
+        result = await mock_server.tools["get_outgoing_links"](path="test.md")
         assert isinstance(result, str)
         data = json.loads(result)
         assert_matches_shape(data, FROZEN_SHAPES["get_outgoing_links"])
 
     @pytest.mark.asyncio
     async def test_get_linked_notes_shape(self, mock_server, mock_cache):
-        with patch("obsidian_brain.tools.links.vault_cache", mock_cache):
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr("obsidian_brain.tools.links.vault_cache", mock_cache)
             result = await mock_server.tools["get_linked_notes"](path="test.md")
         assert isinstance(result, str)
         data = json.loads(result)
@@ -407,27 +396,26 @@ class TestTagToolShapes:
 
     @pytest.mark.asyncio
     async def test_add_tags_shape(self, mock_server, mock_client):
-        with patch("obsidian_brain.tools.tags.ObsidianClient", return_value=mock_client):
-            result = await mock_server.tools["add_tags"](
-                path="test.md", tags=["newtag"]
-            )
+        result = await mock_server.tools["add_tags"](
+            path="test.md", tags=["newtag"]
+        )
         assert isinstance(result, str)
         data = json.loads(result)
         assert_matches_shape(data, FROZEN_SHAPES["add_tags"])
 
     @pytest.mark.asyncio
     async def test_remove_tags_shape(self, mock_server, mock_client):
-        with patch("obsidian_brain.tools.tags.ObsidianClient", return_value=mock_client):
-            result = await mock_server.tools["remove_tags"](
-                path="test.md", tags=["test"]
-            )
+        result = await mock_server.tools["remove_tags"](
+            path="test.md", tags=["test"]
+        )
         assert isinstance(result, str)
         data = json.loads(result)
         assert_matches_shape(data, FROZEN_SHAPES["remove_tags"])
 
     @pytest.mark.asyncio
     async def test_list_all_tags_shape(self, mock_server, mock_cache):
-        with patch("obsidian_brain.tools.tags.vault_cache", mock_cache):
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr("obsidian_brain.tools.tags.vault_cache", mock_cache)
             result = await mock_server.tools["list_all_tags"]()
         assert isinstance(result, str)
         data = json.loads(result)
@@ -435,7 +423,8 @@ class TestTagToolShapes:
 
     @pytest.mark.asyncio
     async def test_get_notes_by_tag_shape(self, mock_server, mock_cache):
-        with patch("obsidian_brain.tools.tags.vault_cache", mock_cache):
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr("obsidian_brain.tools.tags.vault_cache", mock_cache)
             result = await mock_server.tools["get_notes_by_tag"](tag="test")
         assert isinstance(result, str)
         data = json.loads(result)
@@ -451,8 +440,7 @@ class TestSearchToolShapes:
 
     @pytest.mark.asyncio
     async def test_search_content_shape(self, mock_server, mock_client):
-        with patch("obsidian_brain.tools.search.ObsidianClient", return_value=mock_client):
-            result = await mock_server.tools["search_content"](query="test")
+        result = await mock_server.tools["search_content"](query="test")
         assert isinstance(result, str)
         data = json.loads(result)
         assert_matches_shape(data, FROZEN_SHAPES["search_content"])
@@ -467,29 +455,26 @@ class TestDailyToolShapes:
 
     @pytest.mark.asyncio
     async def test_get_daily_note_shape(self, mock_server, mock_client):
-        with patch("obsidian_brain.tools.daily.ObsidianClient", return_value=mock_client):
-            result = await mock_server.tools["get_daily_note"](date="2024-01-15")
+        result = await mock_server.tools["get_daily_note"](date="2024-01-15")
         assert isinstance(result, str)
         data = json.loads(result)
         assert_matches_shape(data, FROZEN_SHAPES["get_daily_note"])
 
     @pytest.mark.asyncio
     async def test_append_to_daily_shape(self, mock_server, mock_client):
-        with patch("obsidian_brain.tools.daily.ObsidianClient", return_value=mock_client):
-            result = await mock_server.tools["append_to_daily"](
-                content="New entry", date="2024-01-15"
-            )
+        result = await mock_server.tools["append_to_daily"](
+            content="New entry", date="2024-01-15"
+        )
         assert isinstance(result, str)
         data = json.loads(result)
         assert_matches_shape(data, FROZEN_SHAPES["append_to_daily"])
 
     @pytest.mark.asyncio
     async def test_create_daily_entry_shape(self, mock_server, mock_client):
-        with patch("obsidian_brain.tools.daily.ObsidianClient", return_value=mock_client):
-            result = await mock_server.tools["create_daily_entry"](
-                content="Did something", tags=["work"], links=["Project"],
-                date="2024-01-15",
-            )
+        result = await mock_server.tools["create_daily_entry"](
+            content="Did something", tags=["work"], links=["Project"],
+            date="2024-01-15",
+        )
         assert isinstance(result, str)
         data = json.loads(result)
         assert_matches_shape(data, FROZEN_SHAPES["create_daily_entry"])
@@ -506,9 +491,9 @@ class TestKnowledgeToolShapes:
     async def test_create_vault_knowledge_base_shape(self, mock_server, mock_client, mock_cache):
         mock_knowledge_mgr = MagicMock()
         mock_knowledge_mgr.generate_content.return_value = "# Knowledge Base"
-        with patch("obsidian_brain.tools.knowledge.ObsidianClient", return_value=mock_client), \
-             patch("obsidian_brain.tools.knowledge.vault_cache", mock_cache), \
-             patch("obsidian_brain.tools.knowledge.knowledge_manager", mock_knowledge_mgr):
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr("obsidian_brain.tools.knowledge.vault_cache", mock_cache)
+            mp.setattr("obsidian_brain.tools.knowledge.knowledge_manager", mock_knowledge_mgr)
             result = await mock_server.tools["create_vault_knowledge_base"]()
         assert isinstance(result, str)
         data = json.loads(result)
@@ -526,8 +511,7 @@ class TestKnowledgeToolShapes:
             },
             "tags": [],
         }
-        with patch("obsidian_brain.tools.knowledge.ObsidianClient", return_value=mock_client):
-            result = await mock_server.tools["get_knowledge_base_status"]()
+        result = await mock_server.tools["get_knowledge_base_status"]()
         assert isinstance(result, str)
         data = json.loads(result)
         assert_matches_shape(data, FROZEN_SHAPES["get_knowledge_base_status"])
@@ -551,8 +535,8 @@ class TestMemoryToolShapes:
             "frontmatter": {"type": "overview", "created": "2024-01-15", "updated": "2024-01-15"},
             "tags": [],
         }
-        with patch("obsidian_brain.tools.memory.ObsidianClient", return_value=mock_client), \
-             patch("obsidian_brain.tools.memory.memory_manager", mock_mem_mgr):
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr("obsidian_brain.tools.memory.memory_manager", mock_mem_mgr)
             result = await mock_server.tools["list_memories"]()
         assert isinstance(result, str)
         data = json.loads(result)
@@ -573,8 +557,8 @@ class TestMemoryToolShapes:
             "frontmatter": {"type": "learning", "created": "2024-01-15"},
             "tags": [],
         }
-        with patch("obsidian_brain.tools.memory.ObsidianClient", return_value=mock_client), \
-             patch("obsidian_brain.tools.memory.memory_manager", mock_mem_mgr):
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr("obsidian_brain.tools.memory.memory_manager", mock_mem_mgr)
             result = await mock_server.tools["read_memory"](name="test")
         assert isinstance(result, str)
         data = json.loads(result)
@@ -585,10 +569,9 @@ class TestMemoryToolShapes:
         mock_mem_mgr = MagicMock()
         mock_mem_mgr.get_memory_path.return_value = ".obsidian-brain/memories/test.md"
         mock_mem_mgr.create_memory_content.return_value = "---\ntype: learning\n---\nContent"
-        from obsidian_brain.client import NoteNotFoundError
         mock_client.get_note.side_effect = NoteNotFoundError("test.md")
-        with patch("obsidian_brain.tools.memory.ObsidianClient", return_value=mock_client), \
-             patch("obsidian_brain.tools.memory.memory_manager", mock_mem_mgr):
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr("obsidian_brain.tools.memory.memory_manager", mock_mem_mgr)
             result = await mock_server.tools["write_memory"](
                 name="test", content="New memory", memory_type="learning"
             )
@@ -600,8 +583,8 @@ class TestMemoryToolShapes:
     async def test_delete_memory_shape(self, mock_server, mock_client):
         mock_mem_mgr = MagicMock()
         mock_mem_mgr.get_memory_path.return_value = ".obsidian-brain/memories/test.md"
-        with patch("obsidian_brain.tools.memory.ObsidianClient", return_value=mock_client), \
-             patch("obsidian_brain.tools.memory.memory_manager", mock_mem_mgr):
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr("obsidian_brain.tools.memory.memory_manager", mock_mem_mgr)
             result = await mock_server.tools["delete_memory"](name="test")
         assert isinstance(result, str)
         data = json.loads(result)
@@ -617,8 +600,8 @@ class TestMemoryToolShapes:
             "frontmatter": {},
             "tags": [],
         }
-        with patch("obsidian_brain.tools.memory.ObsidianClient", return_value=mock_client), \
-             patch("obsidian_brain.tools.memory.memory_manager", mock_mem_mgr):
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr("obsidian_brain.tools.memory.memory_manager", mock_mem_mgr)
             result = await mock_server.tools["edit_memory"](
                 name="test", search="findme", replace="replaced"
             )
@@ -642,8 +625,8 @@ class TestOnboardingToolShapes:
             "message": "Vault has been onboarded",
             "recommendation": "Ready to use",
         }
-        with patch("obsidian_brain.tools.onboarding.ObsidianClient", return_value=mock_client), \
-             patch("obsidian_brain.tools.onboarding.onboarding_manager", mock_onboard_mgr):
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr("obsidian_brain.tools.onboarding.onboarding_manager", mock_onboard_mgr)
             result = await mock_server.tools["check_onboarding_status"]()
         assert isinstance(result, str)
         data = json.loads(result)
@@ -665,9 +648,9 @@ class TestOnboardingToolShapes:
         mock_onboard_mgr.generate_vault_overview_memory.return_value = "overview"
         mock_onboard_mgr.generate_conventions_memory.return_value = "conventions"
 
-        with patch("obsidian_brain.tools.onboarding.ObsidianClient", return_value=mock_client), \
-             patch("obsidian_brain.tools.onboarding.vault_cache", mock_cache), \
-             patch("obsidian_brain.tools.onboarding.onboarding_manager", mock_onboard_mgr):
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr("obsidian_brain.tools.onboarding.vault_cache", mock_cache)
+            mp.setattr("obsidian_brain.tools.onboarding.onboarding_manager", mock_onboard_mgr)
             result = await mock_server.tools["run_onboarding"]()
         assert isinstance(result, str)
         data = json.loads(result)
@@ -680,8 +663,7 @@ class TestOnboardingToolShapes:
             "frontmatter": {},
             "tags": [],
         }
-        with patch("obsidian_brain.tools.onboarding.ObsidianClient", return_value=mock_client):
-            result = await mock_server.tools["get_vault_config"]()
+        result = await mock_server.tools["get_vault_config"]()
         assert isinstance(result, str)
         data = json.loads(result)
         assert_matches_shape(data, FROZEN_SHAPES["get_vault_config"])
