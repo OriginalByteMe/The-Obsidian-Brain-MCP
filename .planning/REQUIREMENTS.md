@@ -21,13 +21,13 @@
 - [x] **CLI-04**: CLI output parsing is isolated in dedicated parser module (not in tool handlers)
 - [x] **CLI-05**: All subprocess calls have explicit timeouts (default 30s)
 - [x] **CLI-06**: Note paths are sanitized before CLI invocation (no command injection)
-- [ ] **CLI-07**: Environment-based backend selection (`OBSIDIAN_BACKEND=cli|rest`)
+- [x] **CLI-07**: Environment-based backend selection (`OBSIDIAN_BACKEND=cli|rest`)
 - [x] **CLI-08**: CLI client detects Obsidian CLI binary availability on startup
 
 ### Tool Migration
 
 - [x] **TOOL-01**: All 8 existing tool modules work with CLI backend without logic changes
-- [ ] **TOOL-02**: Cache refresh works with CLI backend (batch operations where possible)
+- [x] **TOOL-02**: Cache refresh works with CLI backend (batch operations where possible)
 - [x] **TOOL-03**: Cache invalidates specific entries after write operations (not full refresh required)
 - [x] **TOOL-04**: Existing MCP tool response shapes are preserved (backward compatible)
 - [x] **TOOL-05**: Integration tests capture current behavior before migration begins
@@ -110,9 +110,9 @@
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| SDK-01..05 | Phase 1: CLI Migration | Pending |
-| CLI-01..08 | Phase 1: CLI Migration | Pending |
-| TOOL-01..05 | Phase 1: CLI Migration | Pending |
+| SDK-01..05 | Phase 1: CLI Migration | Complete |
+| CLI-01..08 | Phase 1: CLI Migration | Complete |
+| TOOL-01..05 | Phase 1: CLI Migration | Complete |
 | NEW-01..07 | Phase 2: New MCP Tools | Pending |
 | PLUG-01..07 | Phase 3: Claude Code Plugin | Pending |
 | MEM-01..07 | Phase 4: Agent Memory and Vault Learning | Pending |
