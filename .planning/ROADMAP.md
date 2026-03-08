@@ -27,7 +27,7 @@ Migrate the existing MCP server from community REST API plugin to official Obsid
   3. User can switch between `cli` and `rest` backends via environment variable without changing any other configuration
   4. CLI operations on a 500-note vault complete cache refresh within a reasonable time (no 10x regression from REST baseline)
   5. Note paths containing special characters (backticks, dollar signs, semicolons) are handled safely without command injection
-**Plans:** 4 plans
+**Plans:** 1/5 plans executed
 
 Plans:
 - [ ] 01-01-PLAN.md -- Foundation: VaultClient Protocol, CLI client, parsers, exceptions, test infrastructure
@@ -107,7 +107,7 @@ Note: Phase 3 can begin after Phase 1 (does not require Phase 2).
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. CLI Migration | 0/4 | Planned | - |
+| 1. CLI Migration | 1/5 | In Progress|  |
 | 2. New MCP Tools | 0/2 | Not started | - |
 | 3. Claude Code Plugin | 0/2 | Not started | - |
 | 4. Agent Memory and Vault Learning | 0/2 | Not started | - |

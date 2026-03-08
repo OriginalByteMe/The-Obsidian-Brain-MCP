@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: planning
-stopped_at: Phase 1 context gathered
-last_updated: "2026-03-08T04:29:28.842Z"
-last_activity: 2026-03-08 -- Roadmap created
+status: executing
+stopped_at: Completed 01-00-PLAN.md
+last_updated: "2026-03-08T05:18:08.613Z"
+last_activity: 2026-03-08 -- Completed plan 01-00 (pre-migration snapshot tests)
 progress:
   total_phases: 4
   completed_phases: 0
-  total_plans: 0
-  completed_plans: 0
+  total_plans: 5
+  completed_plans: 1
   percent: 0
 ---
 
@@ -26,28 +26,28 @@ See: .planning/PROJECT.md (updated 2026-03-08)
 ## Current Position
 
 Phase: 1 of 4 (CLI Migration)
-Plan: 0 of 3 in current phase
-Status: Ready to plan
-Last activity: 2026-03-08 -- Roadmap created
+Plan: 1 of 5 in current phase
+Status: Executing
+Last activity: 2026-03-08 -- Completed plan 01-00 (pre-migration snapshot tests)
 
-Progress: [..........] 0%
+Progress: [##........] 20%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 0
-- Average duration: -
-- Total execution time: 0 hours
+- Total plans completed: 1
+- Average duration: 4min
+- Total execution time: 0.07 hours
 
 **By Phase:**
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
-| - | - | - | - |
+| 01-cli-migration | 1 | 4min | 4min |
 
 **Recent Trend:**
-- Last 5 plans: -
-- Trend: -
+- Last 5 plans: 4min
+- Trend: starting
 
 *Updated after each plan completion*
 
@@ -61,6 +61,8 @@ Recent decisions affecting current work:
 - [Roadmap]: Merged SDK Migration + CLI Backend + Tool Migration into single Phase 1 (coarse granularity -- all serve one delivery boundary)
 - [Roadmap]: Phase 3 (Plugin) can start after Phase 1, does not require Phase 2 (New Tools)
 - [Roadmap]: Agent Memory and Vault Learning merged into Phase 4 (both depend on plugin + MCP server, both about agent learning)
+- [01-00]: Recursive shape validator with sentinel types for flexible contract testing
+- [01-00]: Captured shapes as Python dicts-of-types rather than JSON Schema
 
 ### Pending Todos
 
@@ -74,6 +76,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-08T04:29:28.832Z
-Stopped at: Phase 1 context gathered
-Resume file: .planning/phases/01-cli-migration/01-CONTEXT.md
+Last session: 2026-03-08T05:17:27Z
+Stopped at: Completed 01-00-PLAN.md
+Resume file: .planning/phases/01-cli-migration/01-00-SUMMARY.md

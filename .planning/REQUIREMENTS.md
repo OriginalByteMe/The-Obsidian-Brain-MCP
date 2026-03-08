@@ -30,7 +30,7 @@
 - [ ] **TOOL-02**: Cache refresh works with CLI backend (batch operations where possible)
 - [ ] **TOOL-03**: Cache invalidates specific entries after write operations (not full refresh required)
 - [ ] **TOOL-04**: Existing MCP tool response shapes are preserved (backward compatible)
-- [ ] **TOOL-05**: Integration tests capture current behavior before migration begins
+- [x] **TOOL-05**: Integration tests capture current behavior before migration begins
 
 ### New MCP Tools
 
