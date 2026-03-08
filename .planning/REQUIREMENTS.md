@@ -110,19 +110,19 @@
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| SDK-01..05 | Phase 1 | Pending |
-| CLI-01..08 | Phase 2 | Pending |
-| TOOL-01..05 | Phase 2 | Pending |
-| NEW-01..07 | Phase 3 | Pending |
-| PLUG-01..07 | Phase 4 | Pending |
-| MEM-01..07 | Phase 5 | Pending |
-| VAULT-01..05 | Phase 5 | Pending |
+| SDK-01..05 | Phase 1: CLI Migration | Pending |
+| CLI-01..08 | Phase 1: CLI Migration | Pending |
+| TOOL-01..05 | Phase 1: CLI Migration | Pending |
+| NEW-01..07 | Phase 2: New MCP Tools | Pending |
+| PLUG-01..07 | Phase 3: Claude Code Plugin | Pending |
+| MEM-01..07 | Phase 4: Agent Memory and Vault Learning | Pending |
+| VAULT-01..05 | Phase 4: Agent Memory and Vault Learning | Pending |
 
 **Coverage:**
 - v1 requirements: 39 total
 - Mapped to phases: 39
-- Unmapped: 0 ✓
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-03-08*
-*Last updated: 2026-03-08 after initial definition*
+*Last updated: 2026-03-08 after roadmap creation*
