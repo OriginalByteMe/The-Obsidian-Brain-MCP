@@ -141,12 +141,12 @@ register_daily_tools(mcp, client)
 
 # Register non-core tools
 register_knowledge_tools(mcp, client)
-register_onboarding_tools(mcp)
+register_onboarding_tools(mcp, client)
 register_memory_tools(mcp, client)
 
 # Register all resources
 register_structure_resource(mcp)
-register_knowledge_resource(mcp)
+register_knowledge_resource(mcp, client)
 
 
 def main():
