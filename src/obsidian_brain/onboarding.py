@@ -5,14 +5,20 @@ Handles vault initialization, configuration, and vault analysis to learn
 structure and practices for intelligent vault interactions.
 """
 
+from __future__ import annotations
+
 import re
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 import yaml
 
 from .models import NoteMetadata, VaultStructure
+
+if TYPE_CHECKING:
+    from .protocol import VaultClient
 
 # Configuration paths within the vault
 # Note: Using visible folder (not dot-prefixed) because Obsidian's REST API
@@ -61,7 +67,8 @@ class OnboardingManager:
     4. Generate initial memories about vault structure
     """
 
-    def __init__(self):
+    def __init__(self, client: VaultClient | None = None):
+        self.client = client
         self.config_path = CONFIG_PATH
         self.memories_path = MEMORIES_PATH
 

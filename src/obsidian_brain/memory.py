@@ -5,13 +5,19 @@ Handles persistent memories stored as markdown files in .obsidian-brain/memories
 to enable cross-session context retention for LLMs.
 """
 
+from __future__ import annotations
+
 import re
 from dataclasses import dataclass
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 import yaml
 
 from .onboarding import MEMORIES_PATH
+
+if TYPE_CHECKING:
+    from .protocol import VaultClient
 
 
 @dataclass
@@ -37,7 +43,8 @@ class MemoryManager:
     - Markdown content body
     """
 
-    def __init__(self):
+    def __init__(self, client: VaultClient | None = None):
+        self.client = client
         self.memories_path = MEMORIES_PATH
 
     def get_memory_path(self, name: str) -> str:
