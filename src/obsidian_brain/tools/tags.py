@@ -5,17 +5,16 @@ Provides tools for adding, removing, and querying tags across the vault.
 """
 
 import json
-from typing import TYPE_CHECKING
+
+from mcp.server.fastmcp import FastMCP
 
 from ..cache import CacheNotInitializedError, vault_cache
-from ..client import NoteNotFoundError, ObsidianClient
+from ..exceptions import NoteNotFoundError
+from ..protocol import VaultClient
 from ..utils.frontmatter import add_frontmatter_tags, remove_frontmatter_tags
 
-if TYPE_CHECKING:
-    from mcp_use.server import MCPServer
 
-
-def register_tag_tools(server: "MCPServer") -> None:
+def register_tag_tools(server: FastMCP, client: VaultClient) -> None:
     """Register all tag-related tools with the MCP server."""
 
     @server.tool()
@@ -43,35 +42,34 @@ def register_tag_tools(server: "MCPServer") -> None:
         # Normalize tags (remove # if present)
         normalized_tags = [t.lstrip("#") for t in tags]
 
-        async with ObsidianClient() as client:
-            try:
-                # Get current content
-                data = await client.get_note(path, include_metadata=True)
-                content = data.get("content", "")
-                current_tags = data.get("tags", [])
+        try:
+            # Get current content
+            data = await client.get_note(path, include_metadata=True)
+            content = data.get("content", "")
+            current_tags = data.get("tags", [])
 
-                # Add new tags
-                new_content = add_frontmatter_tags(content, normalized_tags)
+            # Add new tags
+            new_content = add_frontmatter_tags(content, normalized_tags)
 
-                # Update the note
-                await client.update_note(path, new_content)
+            # Update the note
+            await client.update_note(path, new_content)
 
-                # Get updated tag list
-                updated_tags = sorted(set(current_tags + normalized_tags))
+            # Get updated tag list
+            updated_tags = sorted(set(current_tags + normalized_tags))
 
-                return json.dumps({
-                    "success": True,
-                    "path": path,
-                    "added_tags": normalized_tags,
-                    "all_tags": updated_tags,
-                    "message": f"Added {len(normalized_tags)} tag(s) to {path}",
-                })
-            except NoteNotFoundError:
-                return json.dumps({
-                    "error": True,
-                    "type": "NoteNotFoundError",
-                    "message": f"Note not found: {path}",
-                })
+            return json.dumps({
+                "success": True,
+                "path": path,
+                "added_tags": normalized_tags,
+                "all_tags": updated_tags,
+                "message": f"Added {len(normalized_tags)} tag(s) to {path}",
+            })
+        except NoteNotFoundError:
+            return json.dumps({
+                "error": True,
+                "type": "NoteNotFoundError",
+                "message": f"Note not found: {path}",
+            })
 
     @server.tool()
     async def remove_tags(path: str, tags: list[str]) -> str:
@@ -97,35 +95,34 @@ def register_tag_tools(server: "MCPServer") -> None:
         # Normalize tags
         normalized_tags = [t.lstrip("#") for t in tags]
 
-        async with ObsidianClient() as client:
-            try:
-                # Get current content
-                data = await client.get_note(path, include_metadata=True)
-                content = data.get("content", "")
-                current_tags = data.get("tags", [])
+        try:
+            # Get current content
+            data = await client.get_note(path, include_metadata=True)
+            content = data.get("content", "")
+            current_tags = data.get("tags", [])
 
-                # Remove tags
-                new_content = remove_frontmatter_tags(content, normalized_tags)
+            # Remove tags
+            new_content = remove_frontmatter_tags(content, normalized_tags)
 
-                # Update the note
-                await client.update_note(path, new_content)
+            # Update the note
+            await client.update_note(path, new_content)
 
-                # Calculate remaining tags
-                remaining_tags = [t for t in current_tags if t.lower() not in [x.lower() for x in normalized_tags]]
+            # Calculate remaining tags
+            remaining_tags = [t for t in current_tags if t.lower() not in [x.lower() for x in normalized_tags]]
 
-                return json.dumps({
-                    "success": True,
-                    "path": path,
-                    "removed_tags": normalized_tags,
-                    "remaining_tags": remaining_tags,
-                    "message": f"Removed {len(normalized_tags)} tag(s) from {path}",
-                })
-            except NoteNotFoundError:
-                return json.dumps({
-                    "error": True,
-                    "type": "NoteNotFoundError",
-                    "message": f"Note not found: {path}",
-                })
+            return json.dumps({
+                "success": True,
+                "path": path,
+                "removed_tags": normalized_tags,
+                "remaining_tags": remaining_tags,
+                "message": f"Removed {len(normalized_tags)} tag(s) from {path}",
+            })
+        except NoteNotFoundError:
+            return json.dumps({
+                "error": True,
+                "type": "NoteNotFoundError",
+                "message": f"Note not found: {path}",
+            })
 
     @server.tool()
     async def list_all_tags() -> str:

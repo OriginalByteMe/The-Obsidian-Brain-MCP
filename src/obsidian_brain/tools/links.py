@@ -5,15 +5,14 @@ Provides tools for managing wikilinks, backlinks, and link graph traversal.
 """
 
 import json
-from typing import TYPE_CHECKING
+
+from mcp.server.fastmcp import FastMCP
 
 from ..cache import CacheNotInitializedError, vault_cache
-from ..client import NoteNotFoundError, ObsidianClient
+from ..exceptions import NoteNotFoundError
 from ..models import LinkGraph, LinkGraphEdge, LinkGraphNode
+from ..protocol import VaultClient
 from ..utils.wikilinks import contains_wikilink, extract_wikilinks, inject_wikilink
-
-if TYPE_CHECKING:
-    from mcp_use.server import MCPServer
 
 
 class InvalidBacklinkError(Exception):
@@ -24,7 +23,7 @@ class InvalidBacklinkError(Exception):
         super().__init__(f"Backlink target does not exist: {target}")
 
 
-def register_link_tools(server: "MCPServer") -> None:
+def register_link_tools(server: FastMCP, client: VaultClient) -> None:
     """Register all link-related tools with the MCP server."""
 
     @server.tool()
@@ -51,56 +50,55 @@ def register_link_tools(server: "MCPServer") -> None:
             add_backlink("Projects/AI.md", "Research/Papers", "See also")
             # Adds: "- See also [[Research/Papers]]" to Projects/AI.md
         """
-        async with ObsidianClient() as client:
-            # Validate target exists
-            target_path = (
-                target_note if target_note.endswith(".md") else f"{target_note}.md"
-            )
-            exists = await client.note_exists(target_path)
+        # Validate target exists
+        target_path = (
+            target_note if target_note.endswith(".md") else f"{target_note}.md"
+        )
+        exists = await client.note_exists(target_path)
 
-            if not exists:
-                # Try without folder prefix
-                simple_name = target_path.split("/")[-1]
-                exists = await client.note_exists(simple_name)
+        if not exists:
+            # Try without folder prefix
+            simple_name = target_path.split("/")[-1]
+            exists = await client.note_exists(simple_name)
 
-            if not exists:
-                return json.dumps({
-                    "error": True,
-                    "type": "InvalidBacklinkError",
-                    "message": f"Target note does not exist: {target_note}",
-                })
-
-            # Get source note content
-            try:
-                source_data = await client.get_note(source_path, include_metadata=False)
-                content = source_data.get("content", "")
-            except NoteNotFoundError:
-                return json.dumps({
-                    "error": True,
-                    "type": "NoteNotFoundError",
-                    "message": f"Source note not found: {source_path}",
-                })
-
-            # Check if link already exists
-            if contains_wikilink(content, target_note):
-                return json.dumps({
-                    "error": True,
-                    "type": "LinkAlreadyExistsError",
-                    "message": f"Link to {target_note} already exists in {source_path}",
-                })
-
-            # Inject the wikilink
-            new_content = inject_wikilink(content, target_note, context)
-
-            # Update the note
-            await client.update_note(source_path, new_content)
-
+        if not exists:
             return json.dumps({
-                "success": True,
-                "source": source_path,
-                "target": target_note,
-                "message": f"Added link to [[{target_note}]] in {source_path}",
+                "error": True,
+                "type": "InvalidBacklinkError",
+                "message": f"Target note does not exist: {target_note}",
             })
+
+        # Get source note content
+        try:
+            source_data = await client.get_note(source_path, include_metadata=False)
+            content = source_data.get("content", "")
+        except NoteNotFoundError:
+            return json.dumps({
+                "error": True,
+                "type": "NoteNotFoundError",
+                "message": f"Source note not found: {source_path}",
+            })
+
+        # Check if link already exists
+        if contains_wikilink(content, target_note):
+            return json.dumps({
+                "error": True,
+                "type": "LinkAlreadyExistsError",
+                "message": f"Link to {target_note} already exists in {source_path}",
+            })
+
+        # Inject the wikilink
+        new_content = inject_wikilink(content, target_note, context)
+
+        # Update the note
+        await client.update_note(source_path, new_content)
+
+        return json.dumps({
+            "success": True,
+            "source": source_path,
+            "target": target_note,
+            "message": f"Added link to [[{target_note}]] in {source_path}",
+        })
 
     @server.tool()
     async def get_backlinks(path: str) -> str:
@@ -144,24 +142,23 @@ def register_link_tools(server: "MCPServer") -> None:
         Returns:
             JSON array of linked note names/paths
         """
-        async with ObsidianClient() as client:
-            try:
-                data = await client.get_note(path, include_metadata=False)
-                content = data.get("content", "")
-                links = extract_wikilinks(content)
+        try:
+            data = await client.get_note(path, include_metadata=False)
+            content = data.get("content", "")
+            links = extract_wikilinks(content)
 
-                return json.dumps({
-                    "success": True,
-                    "path": path,
-                    "outgoing_links": links,
-                    "count": len(links),
-                })
-            except NoteNotFoundError:
-                return json.dumps({
-                    "error": True,
-                    "type": "NoteNotFoundError",
-                    "message": f"Note not found: {path}",
-                })
+            return json.dumps({
+                "success": True,
+                "path": path,
+                "outgoing_links": links,
+                "count": len(links),
+            })
+        except NoteNotFoundError:
+            return json.dumps({
+                "error": True,
+                "type": "NoteNotFoundError",
+                "message": f"Note not found: {path}",
+            })
 
     @server.tool()
     async def get_linked_notes(

@@ -1,13 +1,13 @@
 """
 Obsidian Brain MCP Server
 
-Main server module that initializes the MCP server and registers
+Main server module that initializes the FastMCP server and registers
 all tools and resources.
 """
 
-from mcp_use.server import MCPServer
+from mcp.server.fastmcp import FastMCP
 
-from . import __version__
+from .cli_client import ObsidianCLIClient
 from .resources.knowledge import register_knowledge_resource
 from .resources.structure import register_structure_resource
 from .tools.daily import register_daily_tools
@@ -20,14 +20,13 @@ from .tools.tags import register_tag_tools
 from .tools.vault import register_vault_tools
 
 # Initialize the MCP server
-server = MCPServer(
-    name="obsidian-brain",
-    version=__version__,
+mcp = FastMCP(
+    "obsidian-brain",
     instructions="""
 Obsidian Brain MCP Server - Intelligent Obsidian Vault Interaction
 
 This server provides tools for interacting with your Obsidian vault through
-the Obsidian Local REST API.
+the Obsidian CLI (requires Obsidian 1.12+ with CLI enabled and on PATH).
 
 ## Getting Started
 
@@ -102,14 +101,11 @@ Store memories for: project context, user preferences, learnings, session summar
 
 ### Search Operations
 - `search_content` - Full-text search across vault
-- `search_advanced` - Dataview DQL query (requires plugin)
-- `search_jsonlogic` - JsonLogic query for complex filtering
 
-### Daily/Periodic Notes
+### Daily Notes
 - `get_daily_note` - Get today's or specific date's daily note
 - `append_to_daily` - Append content to daily note
 - `create_daily_entry` - Create timestamped entry with tags/links
-- `get_periodic_note` - Get weekly/monthly/quarterly/yearly notes
 
 ### Knowledge Base
 - `create_vault_knowledge_base` - Generate persistent vault overview
@@ -125,33 +121,37 @@ Store memories for: project context, user preferences, learnings, session summar
 - **Link traversal**: Explore relationships up to 3 hops
 - **Full-text search**: Search across all vault content
 
-## Configuration
+## Requirements
 
-Set these environment variables:
-- OBSIDIAN_API_KEY: Your API key from Obsidian Local REST API plugin
-- OBSIDIAN_HOST: API host (default: 127.0.0.1)
-- OBSIDIAN_PORT: API port (default: 27124)
+- Obsidian 1.12+ with CLI enabled (Settings > General > Command line interface)
+- CLI registered on PATH (click 'Register CLI' in Obsidian settings)
+- Or set OBSIDIAN_CLI_PATH environment variable
 """.strip(),
 )
 
-# Register all tools
-register_vault_tools(server)
-register_link_tools(server)
-register_tag_tools(server)
-register_search_tools(server)
-register_daily_tools(server)
-register_knowledge_tools(server)
-register_onboarding_tools(server)
-register_memory_tools(server)
+# Create the CLI client singleton
+client = ObsidianCLIClient()
+
+# Register core tools (migrated to VaultClient)
+register_vault_tools(mcp, client)
+register_link_tools(mcp, client)
+register_tag_tools(mcp, client)
+register_search_tools(mcp, client)
+register_daily_tools(mcp, client)
+
+# Register non-core tools
+register_knowledge_tools(mcp, client)
+register_onboarding_tools(mcp)
+register_memory_tools(mcp, client)
 
 # Register all resources
-register_structure_resource(server)
-register_knowledge_resource(server)
+register_structure_resource(mcp)
+register_knowledge_resource(mcp)
 
 
 def main():
     """Run the MCP server."""
-    server.run(transport="stdio")
+    mcp.run()
 
 
 if __name__ == "__main__":

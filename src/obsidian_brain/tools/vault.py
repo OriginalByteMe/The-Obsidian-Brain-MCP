@@ -5,16 +5,15 @@ Provides tools for listing, reading, creating, and updating notes.
 """
 
 import json
-from typing import TYPE_CHECKING
+
+from mcp.server.fastmcp import FastMCP
 
 from ..cache import vault_cache
-from ..client import NoteNotFoundError, ObsidianClient
+from ..exceptions import NoteNotFoundError
 from ..models import FileEntry, NoteContent
+from ..protocol import VaultClient
 from ..utils.frontmatter import create_note_with_frontmatter
 from ..utils.wikilinks import extract_wikilinks, inject_wikilink
-
-if TYPE_CHECKING:
-    from mcp_use.server import MCPServer
 
 
 class InvalidBacklinkError(Exception):
@@ -25,7 +24,7 @@ class InvalidBacklinkError(Exception):
         super().__init__(f"Backlink target does not exist: {target}")
 
 
-def register_vault_tools(server: "MCPServer") -> None:
+def register_vault_tools(server: FastMCP, client: VaultClient) -> None:
     """Register all vault-related tools with the MCP server."""
 
     @server.tool()
@@ -39,15 +38,14 @@ def register_vault_tools(server: "MCPServer") -> None:
         Returns:
             JSON array of file/folder entries with names and types
         """
-        async with ObsidianClient() as client:
-            entries = await client.list_directory(path)
+        entries = await client.list_directory(path)
 
-            result = [
-                FileEntry(name=e["name"], type=e["type"]).model_dump()
-                for e in entries
-            ]
+        result = [
+            FileEntry(name=e["name"], type=e["type"]).model_dump()
+            for e in entries
+        ]
 
-            return json.dumps(result, indent=2)
+        return json.dumps(result, indent=2)
 
     @server.tool()
     async def get_note(path: str) -> str:
@@ -60,29 +58,28 @@ def register_vault_tools(server: "MCPServer") -> None:
         Returns:
             JSON with content, tags, links, and frontmatter
         """
-        async with ObsidianClient() as client:
-            try:
-                data = await client.get_note(path, include_metadata=True)
+        try:
+            data = await client.get_note(path, include_metadata=True)
 
-                # Extract wikilinks from content
-                outgoing_links = extract_wikilinks(data.get("content", ""))
+            # Extract wikilinks from content
+            outgoing_links = extract_wikilinks(data.get("content", ""))
 
-                result = NoteContent(
-                    path=path,
-                    content=data.get("content", ""),
-                    tags=data.get("tags", []),
-                    outgoing_links=outgoing_links,
-                    frontmatter=data.get("frontmatter", {}),
-                    modified=data.get("modified"),
-                )
+            result = NoteContent(
+                path=path,
+                content=data.get("content", ""),
+                tags=data.get("tags", []),
+                outgoing_links=outgoing_links,
+                frontmatter=data.get("frontmatter", {}),
+                modified=data.get("modified"),
+            )
 
-                return result.model_dump_json(indent=2)
-            except NoteNotFoundError:
-                return json.dumps({
-                    "error": True,
-                    "type": "NoteNotFoundError",
-                    "message": f"Note not found: {path}",
-                })
+            return result.model_dump_json(indent=2)
+        except NoteNotFoundError:
+            return json.dumps({
+                "error": True,
+                "type": "NoteNotFoundError",
+                "message": f"Note not found: {path}",
+            })
 
     @server.tool()
     async def create_note(
@@ -112,52 +109,51 @@ def register_vault_tools(server: "MCPServer") -> None:
         tags = tags or []
         backlinks = backlinks or []
 
-        async with ObsidianClient() as client:
-            # Validate backlinks exist
-            for link in backlinks:
-                # Try common path variations
-                link_path = link if link.endswith(".md") else f"{link}.md"
-                exists = await client.note_exists(link_path)
+        # Validate backlinks exist
+        for link in backlinks:
+            # Try common path variations
+            link_path = link if link.endswith(".md") else f"{link}.md"
+            exists = await client.note_exists(link_path)
 
-                if not exists:
-                    # Try without folder prefix
-                    simple_path = link_path.split("/")[-1]
-                    exists = await client.note_exists(simple_path)
+            if not exists:
+                # Try without folder prefix
+                simple_path = link_path.split("/")[-1]
+                exists = await client.note_exists(simple_path)
 
-                if not exists:
-                    return json.dumps({
-                        "error": True,
-                        "type": "InvalidBacklinkError",
-                        "message": f"Backlink target does not exist: {link}",
-                    })
+            if not exists:
+                return json.dumps({
+                    "error": True,
+                    "type": "InvalidBacklinkError",
+                    "message": f"Backlink target does not exist: {link}",
+                })
 
-            # Extract title from path
-            filename = path.split("/")[-1]
-            if filename.endswith(".md"):
-                filename = filename[:-3]
-            title = filename
+        # Extract title from path
+        filename = path.split("/")[-1]
+        if filename.endswith(".md"):
+            filename = filename[:-3]
+        title = filename
 
-            # Create note with frontmatter
-            note_content = create_note_with_frontmatter(
-                title=title,
-                content=content,
-                tags=tags,
-            )
+        # Create note with frontmatter
+        note_content = create_note_with_frontmatter(
+            title=title,
+            content=content,
+            tags=tags,
+        )
 
-            # Add backlinks under "See Also" section
-            for link in backlinks:
-                note_content = inject_wikilink(note_content, link)
+        # Add backlinks under "See Also" section
+        for link in backlinks:
+            note_content = inject_wikilink(note_content, link)
 
-            # Create the note
-            await client.create_note(path, note_content)
+        # Create the note
+        await client.create_note(path, note_content)
 
-            return json.dumps({
-                "success": True,
-                "path": path,
-                "message": f"Created note: {path}",
-                "tags": tags,
-                "backlinks": backlinks,
-            })
+        return json.dumps({
+            "success": True,
+            "path": path,
+            "message": f"Created note: {path}",
+            "tags": tags,
+            "backlinks": backlinks,
+        })
 
     @server.tool()
     async def update_note(path: str, content: str) -> str:
@@ -171,23 +167,22 @@ def register_vault_tools(server: "MCPServer") -> None:
         Returns:
             Confirmation message
         """
-        async with ObsidianClient() as client:
-            try:
-                # Verify note exists first
-                await client.get_note(path, include_metadata=False)
-                await client.update_note(path, content)
+        try:
+            # Verify note exists first
+            await client.get_note(path, include_metadata=False)
+            await client.update_note(path, content)
 
-                return json.dumps({
-                    "success": True,
-                    "path": path,
-                    "message": f"Updated note: {path}",
-                })
-            except NoteNotFoundError:
-                return json.dumps({
-                    "error": True,
-                    "type": "NoteNotFoundError",
-                    "message": f"Note not found: {path}",
-                })
+            return json.dumps({
+                "success": True,
+                "path": path,
+                "message": f"Updated note: {path}",
+            })
+        except NoteNotFoundError:
+            return json.dumps({
+                "error": True,
+                "type": "NoteNotFoundError",
+                "message": f"Note not found: {path}",
+            })
 
     @server.tool()
     async def append_to_note(
@@ -207,33 +202,37 @@ def register_vault_tools(server: "MCPServer") -> None:
         Returns:
             Confirmation message
         """
-        async with ObsidianClient() as client:
-            try:
-                if heading:
-                    # Use PATCH with heading target
-                    await client.patch_note(
-                        path=path,
-                        operation="append",
-                        content=f"\n{content}",
-                        target_type="heading",
-                        target=heading,
-                    )
-                else:
-                    # Simple append
-                    await client.append_to_note(path, f"\n{content}")
+        try:
+            if heading:
+                # With heading: get current content, find/create heading, append under it
+                data = await client.get_note(path, include_metadata=False)
+                current = data.get("content", "")
 
-                return json.dumps({
-                    "success": True,
-                    "path": path,
-                    "message": f"Appended to note: {path}",
-                    "heading": heading,
-                })
-            except NoteNotFoundError:
-                return json.dumps({
-                    "error": True,
-                    "type": "NoteNotFoundError",
-                    "message": f"Note not found: {path}",
-                })
+                if heading in current:
+                    # Find the heading and append after it
+                    idx = current.index(heading) + len(heading)
+                    new_content = current[:idx] + f"\n{content}" + current[idx:]
+                else:
+                    # Add heading at end with content
+                    new_content = current + f"\n\n{heading}\n\n{content}"
+
+                await client.update_note(path, new_content)
+            else:
+                # Simple append
+                await client.append_to_note(path, f"\n{content}")
+
+            return json.dumps({
+                "success": True,
+                "path": path,
+                "message": f"Appended to note: {path}",
+                "heading": heading,
+            })
+        except NoteNotFoundError:
+            return json.dumps({
+                "error": True,
+                "type": "NoteNotFoundError",
+                "message": f"Note not found: {path}",
+            })
 
     @server.tool()
     async def refresh_vault_structure() -> str:
@@ -248,15 +247,14 @@ def register_vault_tools(server: "MCPServer") -> None:
         Returns:
             Summary of refreshed structure (note count, folder count, etc.)
         """
-        async with ObsidianClient() as client:
-            structure = await vault_cache.refresh(client)
+        structure = await vault_cache.refresh(client)
 
-            return json.dumps({
-                "success": True,
-                "message": "Vault structure refreshed",
-                "stats": structure.stats.model_dump(),
-                "refreshed_at": structure.refreshed_at.isoformat(),
-            })
+        return json.dumps({
+            "success": True,
+            "message": "Vault structure refreshed",
+            "stats": structure.stats.model_dump(),
+            "refreshed_at": structure.refreshed_at.isoformat(),
+        })
 
     @server.tool()
     async def delete_note(path: str) -> str:
@@ -269,18 +267,17 @@ def register_vault_tools(server: "MCPServer") -> None:
         Returns:
             Confirmation message
         """
-        async with ObsidianClient() as client:
-            try:
-                await client.delete_note(path)
+        try:
+            await client.delete_note(path)
 
-                return json.dumps({
-                    "success": True,
-                    "path": path,
-                    "message": f"Deleted note: {path}",
-                })
-            except NoteNotFoundError:
-                return json.dumps({
-                    "error": True,
-                    "type": "NoteNotFoundError",
-                    "message": f"Note not found: {path}",
-                })
+            return json.dumps({
+                "success": True,
+                "path": path,
+                "message": f"Deleted note: {path}",
+            })
+        except NoteNotFoundError:
+            return json.dumps({
+                "error": True,
+                "type": "NoteNotFoundError",
+                "message": f"Note not found: {path}",
+            })

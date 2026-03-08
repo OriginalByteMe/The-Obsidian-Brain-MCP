@@ -1,31 +1,29 @@
 """
-Daily/periodic note tools for Obsidian Brain MCP.
+Daily note tools for Obsidian Brain MCP.
 
-Provides tools for working with daily notes and other periodic notes
-(weekly, monthly, etc.).
+Provides tools for working with daily notes.
 """
 
 import json
 from datetime import datetime
-from typing import TYPE_CHECKING
 
-from ..client import NoteNotFoundError, ObsidianAPIError, ObsidianClient
+from mcp.server.fastmcp import FastMCP
+
+from ..exceptions import NoteNotFoundError, ObsidianCLIError
+from ..protocol import VaultClient
 from ..utils.wikilinks import create_wikilink
 
-if TYPE_CHECKING:
-    from mcp_use.server import MCPServer
 
-
-def register_daily_tools(server: "MCPServer") -> None:
-    """Register all daily/periodic note tools with the MCP server."""
+def register_daily_tools(server: FastMCP, client: VaultClient) -> None:
+    """Register all daily note tools with the MCP server."""
 
     @server.tool()
     async def get_daily_note(date: str | None = None) -> str:
         """
         Get the daily note for today or a specific date.
 
-        Uses Obsidian's periodic notes feature which requires the
-        Periodic Notes or Daily Notes plugin to be configured.
+        Uses Obsidian's daily notes feature which requires the
+        Daily Notes plugin to be configured.
 
         Args:
             date: Optional date in YYYY-MM-DD format (default: today)
@@ -47,29 +45,28 @@ def register_daily_tools(server: "MCPServer") -> None:
                 "message": f"Invalid date format: {date}. Use YYYY-MM-DD",
             })
 
-        async with ObsidianClient() as client:
-            try:
-                data = await client.get_periodic("daily", date)
+        try:
+            data = await client.get_daily_note(date)
 
-                return json.dumps({
-                    "success": True,
-                    "date": date,
-                    "content": data.get("content", ""),
-                    "tags": data.get("tags", []),
-                    "frontmatter": data.get("frontmatter", {}),
-                })
-            except NoteNotFoundError:
-                return json.dumps({
-                    "error": True,
-                    "type": "NoteNotFoundError",
-                    "message": f"Daily note not found for {date}",
-                })
-            except ObsidianAPIError as e:
-                return json.dumps({
-                    "error": True,
-                    "type": "ObsidianAPIError",
-                    "message": str(e),
-                })
+            return json.dumps({
+                "success": True,
+                "date": date,
+                "content": data.get("content", ""),
+                "tags": data.get("tags", []),
+                "frontmatter": data.get("frontmatter", {}),
+            })
+        except NoteNotFoundError:
+            return json.dumps({
+                "error": True,
+                "type": "NoteNotFoundError",
+                "message": f"Daily note not found for {date}",
+            })
+        except ObsidianCLIError as e:
+            return json.dumps({
+                "error": True,
+                "type": "ObsidianCLIError",
+                "message": str(e),
+            })
 
     @server.tool()
     async def append_to_daily(
@@ -85,7 +82,7 @@ def register_daily_tools(server: "MCPServer") -> None:
 
         Args:
             content: Content to append
-            heading: Optional heading to append under (e.g., "## Notes")
+            heading: Optional heading to prepend before content
             date: Optional date in YYYY-MM-DD format (default: today)
 
         Returns:
@@ -112,48 +109,35 @@ def register_daily_tools(server: "MCPServer") -> None:
                 "message": f"Invalid date format: {date}. Use YYYY-MM-DD",
             })
 
-        async with ObsidianClient() as client:
-            try:
-                # Format content based on whether heading is specified
-                if heading:
-                    # If heading specified, we need to use PATCH
-                    # For now, just prepend heading marker if not present
-                    if not heading.startswith("#"):
-                        heading = f"## {heading}"
-                    append_content = f"\n{content}"
+        try:
+            if heading:
+                # Format with heading
+                if not heading.startswith("#"):
+                    heading = f"## {heading}"
+                append_content = f"\n\n{heading}\n\n{content}"
+            else:
+                append_content = f"\n{content}"
 
-                    # Note: The periodic API may not support heading targeting
-                    # Fall back to simple append with heading included
-                    try:
-                        await client.append_periodic(
-                            f"\n\n{heading}\n\n{content}",
-                            "daily",
-                            date,
-                        )
-                    except ObsidianAPIError:
-                        # Try simple append if heading-aware append fails
-                        await client.append_periodic(append_content, "daily", date)
-                else:
-                    await client.append_periodic(f"\n{content}", "daily", date)
+            await client.append_daily(append_content, date)
 
-                return json.dumps({
-                    "success": True,
-                    "date": date,
-                    "heading": heading,
-                    "message": f"Appended to daily note for {date}",
-                })
-            except NoteNotFoundError:
-                return json.dumps({
-                    "error": True,
-                    "type": "NoteNotFoundError",
-                    "message": f"Daily note not found for {date}. It may need to be created first.",
-                })
-            except ObsidianAPIError as e:
-                return json.dumps({
-                    "error": True,
-                    "type": "ObsidianAPIError",
-                    "message": str(e),
-                })
+            return json.dumps({
+                "success": True,
+                "date": date,
+                "heading": heading,
+                "message": f"Appended to daily note for {date}",
+            })
+        except NoteNotFoundError:
+            return json.dumps({
+                "error": True,
+                "type": "NoteNotFoundError",
+                "message": f"Daily note not found for {date}. It may need to be created first.",
+            })
+        except ObsidianCLIError as e:
+            return json.dumps({
+                "error": True,
+                "type": "ObsidianCLIError",
+                "message": str(e),
+            })
 
     @server.tool()
     async def create_daily_entry(
@@ -220,97 +204,27 @@ def register_daily_tools(server: "MCPServer") -> None:
 
         entry = "".join(entry_parts)
 
-        async with ObsidianClient() as client:
-            try:
-                await client.append_periodic(f"\n{entry}", "daily", date)
+        try:
+            await client.append_daily(f"\n{entry}", date)
 
-                return json.dumps({
-                    "success": True,
-                    "date": date,
-                    "entry": entry,
-                    "timestamp": timestamp,
-                    "tags": tags,
-                    "links": links,
-                    "message": f"Created entry in daily note for {date}",
-                })
-            except NoteNotFoundError:
-                return json.dumps({
-                    "error": True,
-                    "type": "NoteNotFoundError",
-                    "message": f"Daily note not found for {date}. It may need to be created first.",
-                })
-            except ObsidianAPIError as e:
-                return json.dumps({
-                    "error": True,
-                    "type": "ObsidianAPIError",
-                    "message": str(e),
-                })
-
-    @server.tool()
-    async def get_periodic_note(
-        period: str = "daily",
-        date: str | None = None,
-    ) -> str:
-        """
-        Get a periodic note (daily, weekly, monthly, quarterly, yearly).
-
-        Requires the Periodic Notes plugin to be configured in Obsidian
-        for non-daily periods.
-
-        Args:
-            period: Period type - "daily", "weekly", "monthly", "quarterly", "yearly"
-            date: Optional date in appropriate format:
-                  - daily: YYYY-MM-DD
-                  - weekly: YYYY-MM-DD (uses week containing that date)
-                  - monthly: YYYY-MM
-                  - quarterly: YYYY-Q[1-4]
-                  - yearly: YYYY
-
-        Returns:
-            JSON with periodic note content and metadata
-        """
-        valid_periods = ("daily", "weekly", "monthly", "quarterly", "yearly")
-        if period not in valid_periods:
+            return json.dumps({
+                "success": True,
+                "date": date,
+                "entry": entry,
+                "timestamp": timestamp,
+                "tags": tags,
+                "links": links,
+                "message": f"Created entry in daily note for {date}",
+            })
+        except NoteNotFoundError:
             return json.dumps({
                 "error": True,
-                "type": "ValidationError",
-                "message": f"Invalid period: {period}. Must be one of: {', '.join(valid_periods)}",
+                "type": "NoteNotFoundError",
+                "message": f"Daily note not found for {date}. It may need to be created first.",
             })
-
-        # Default date handling
-        if not date:
-            today = datetime.now()
-            if period in ("daily", "weekly"):
-                date = today.strftime("%Y-%m-%d")
-            elif period == "monthly":
-                date = today.strftime("%Y-%m")
-            elif period == "quarterly":
-                quarter = (today.month - 1) // 3 + 1
-                date = f"{today.year}-Q{quarter}"
-            elif period == "yearly":
-                date = str(today.year)
-
-        async with ObsidianClient() as client:
-            try:
-                data = await client.get_periodic(period, date)
-
-                return json.dumps({
-                    "success": True,
-                    "period": period,
-                    "date": date,
-                    "content": data.get("content", ""),
-                    "tags": data.get("tags", []),
-                    "frontmatter": data.get("frontmatter", {}),
-                })
-            except NoteNotFoundError:
-                return json.dumps({
-                    "error": True,
-                    "type": "NoteNotFoundError",
-                    "message": f"{period.capitalize()} note not found for {date}",
-                })
-            except ObsidianAPIError as e:
-                return json.dumps({
-                    "error": True,
-                    "type": "ObsidianAPIError",
-                    "message": str(e),
-                })
+        except ObsidianCLIError as e:
+            return json.dumps({
+                "error": True,
+                "type": "ObsidianCLIError",
+                "message": str(e),
+            })
