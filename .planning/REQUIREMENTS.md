@@ -28,7 +28,7 @@
 
 - [x] **TOOL-01**: All 8 existing tool modules work with CLI backend without logic changes
 - [ ] **TOOL-02**: Cache refresh works with CLI backend (batch operations where possible)
-- [ ] **TOOL-03**: Cache invalidates specific entries after write operations (not full refresh required)
+- [x] **TOOL-03**: Cache invalidates specific entries after write operations (not full refresh required)
 - [x] **TOOL-04**: Existing MCP tool response shapes are preserved (backward compatible)
 - [x] **TOOL-05**: Integration tests capture current behavior before migration begins
 
