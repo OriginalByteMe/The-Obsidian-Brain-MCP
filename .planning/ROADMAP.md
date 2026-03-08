@@ -27,7 +27,7 @@ Migrate the existing MCP server from community REST API plugin to official Obsid
   3. REST backend is fully removed -- no client.py, no httpx dependency, no Docker files, no backend-switching env var
   4. CLI operations on a 500-note vault complete cache refresh within a reasonable time (no 10x regression from REST baseline)
   5. Note paths containing special characters (backticks, dollar signs, semicolons) are handled safely without command injection
-**Plans:** 5/5 plans executed
+**Plans:** 6 plans (5 executed + 1 gap closure)
 
 Plans:
 - [x] 01-00-PLAN.md -- Pre-migration behavior snapshots and response shape contract tests
@@ -35,6 +35,7 @@ Plans:
 - [x] 01-02-PLAN.md -- Server + Core Tools: FastMCP server rewrite, migrate vault/links/tags/search/daily tools
 - [x] 01-03-PLAN.md -- Higher-level Tools: Migrate knowledge/memory/onboarding tools and resources
 - [x] 01-04-PLAN.md -- Cache + Cleanup + Docs: Cache migration, delete REST/Docker artifacts, update deps and docs
+- [ ] 01-05-PLAN.md -- Gap closure: Fix server.py wiring bugs for onboarding tools and knowledge resource
 
 **Research gaps to resolve before implementation:**
 - Obsidian CLI exact subcommands and JSON output support (CRITICAL -- entire migration depends on this)
@@ -108,7 +109,7 @@ Note: Phase 3 can begin after Phase 1 (does not require Phase 2).
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. CLI Migration | 5/5 | Complete | 2026-03-08 |
+| 1. CLI Migration | 5/6 | Gap closure pending | - |
 | 2. New MCP Tools | 0/2 | Not started | - |
 | 3. Claude Code Plugin | 0/2 | Not started | - |
 | 4. Agent Memory and Vault Learning | 0/2 | Not started | - |
