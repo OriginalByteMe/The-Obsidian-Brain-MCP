@@ -23,17 +23,18 @@ Migrate the existing MCP server from community REST API plugin to official Obsid
 **Requirements**: SDK-01, SDK-02, SDK-03, SDK-04, SDK-05, CLI-01, CLI-02, CLI-03, CLI-04, CLI-05, CLI-06, CLI-07, CLI-08, TOOL-01, TOOL-02, TOOL-03, TOOL-04, TOOL-05
 **Success Criteria** (what must be TRUE):
   1. User can install and run the MCP server with only the `mcp` SDK -- `mcp-use`, `httpx`, and `pytest-httpx` are gone from dependencies
-  2. User can configure `OBSIDIAN_BACKEND=cli` and all 8 existing tool modules (vault, links, tags, search, daily, knowledge, onboarding, memory) produce the same results as the REST backend
-  3. User can switch between `cli` and `rest` backends via environment variable without changing any other configuration
+  2. All 8 existing tool modules (vault, links, tags, search, daily, knowledge, onboarding, memory) produce the same response shapes as pre-migration via the CLI backend
+  3. REST backend is fully removed -- no client.py, no httpx dependency, no Docker files, no backend-switching env var
   4. CLI operations on a 500-note vault complete cache refresh within a reasonable time (no 10x regression from REST baseline)
   5. Note paths containing special characters (backticks, dollar signs, semicolons) are handled safely without command injection
-**Plans:** 4/5 plans executed
+**Plans:** 5/5 plans executed
 
 Plans:
+- [x] 01-00-PLAN.md -- Pre-migration behavior snapshots and response shape contract tests
 - [x] 01-01-PLAN.md -- Foundation: VaultClient Protocol, CLI client, parsers, exceptions, test infrastructure
 - [x] 01-02-PLAN.md -- Server + Core Tools: FastMCP server rewrite, migrate vault/links/tags/search/daily tools
 - [x] 01-03-PLAN.md -- Higher-level Tools: Migrate knowledge/memory/onboarding tools and resources
-- [ ] 01-04-PLAN.md -- Cache + Cleanup + Docs: Cache migration, delete REST/Docker artifacts, update deps and docs
+- [x] 01-04-PLAN.md -- Cache + Cleanup + Docs: Cache migration, delete REST/Docker artifacts, update deps and docs
 
 **Research gaps to resolve before implementation:**
 - Obsidian CLI exact subcommands and JSON output support (CRITICAL -- entire migration depends on this)
@@ -107,7 +108,7 @@ Note: Phase 3 can begin after Phase 1 (does not require Phase 2).
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. CLI Migration | 4/5 | In Progress |  |
+| 1. CLI Migration | 5/5 | Complete | 2026-03-08 |
 | 2. New MCP Tools | 0/2 | Not started | - |
 | 3. Claude Code Plugin | 0/2 | Not started | - |
 | 4. Agent Memory and Vault Learning | 0/2 | Not started | - |
