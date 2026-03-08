@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Completed 01-00-PLAN.md
-last_updated: "2026-03-08T05:22:24.793Z"
-last_activity: 2026-03-08 -- Completed plan 01-00 (pre-migration snapshot tests)
+stopped_at: Completed 01-03-PLAN.md
+last_updated: "2026-03-08T05:36:00.000Z"
+last_activity: 2026-03-08 -- Completed plan 01-03 (higher-level tools + resources migration)
 progress:
   total_phases: 4
   completed_phases: 0
   total_plans: 5
-  completed_plans: 2
-  percent: 40
+  completed_plans: 4
+  percent: 80
 ---
 
 # Project State
@@ -26,28 +26,28 @@ See: .planning/PROJECT.md (updated 2026-03-08)
 ## Current Position
 
 Phase: 1 of 4 (CLI Migration)
-Plan: 2 of 5 in current phase
+Plan: 4 of 5 in current phase
 Status: Executing
-Last activity: 2026-03-08 -- Completed plan 01-01 (foundation: protocol, CLI client, parsers, exceptions)
+Last activity: 2026-03-08 -- Completed plan 01-03 (higher-level tools + resources migration)
 
-Progress: [████......] 40%
+Progress: [████████..] 80%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 2
+- Total plans completed: 4
 - Average duration: 6min
-- Total execution time: 0.20 hours
+- Total execution time: 0.40 hours
 
 **By Phase:**
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
-| 01-cli-migration | 2 | 12min | 6min |
+| 01-cli-migration | 4 | 24min | 6min |
 
 **Recent Trend:**
-- Last 5 plans: 4min, 8min
-- Trend: ramping up
+- Last 5 plans: 4min, 8min, 4min, 8min
+- Trend: steady
 
 *Updated after each plan completion*
 
@@ -67,6 +67,13 @@ Recent decisions affecting current work:
 - [01-01]: Parsers accept both dict and JSON string inputs for flexibility with unknown CLI output shapes
 - [01-01]: CLINotFoundError separate from ObsidianCLIError (missing binary is not a CLI execution failure)
 - [01-01]: Path sanitization via null byte rejection + structural safety from list-form exec
+- [01-02]: ObsidianCLIClient as module-level singleton in server.py, injected into all tool registrations
+- [01-02]: search_advanced, search_jsonlogic, get_periodic_note removed (no CLI equivalent)
+- [01-02]: Tool registration pattern: register_*_tools(server: FastMCP, client: VaultClient)
+- [01-02]: append_to_note heading uses get+update pattern instead of REST PATCH
+- [01-03]: Manager classes kept as pure logic with optional VaultClient (already client-agnostic)
+- [01-03]: Added VaultCache.invalidate_path() for targeted cache invalidation after writes
+- [01-03]: Bare server parameter type for compatibility with both MCPServer and FastMCP
 
 ### Pending Todos
 
@@ -80,6 +87,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-08T05:21:19Z
-Stopped at: Completed 01-01-PLAN.md
-Resume file: .planning/phases/01-cli-migration/01-01-SUMMARY.md
+Last session: 2026-03-08T05:32:00Z
+Stopped at: Completed 01-02-PLAN.md
+Resume file: .planning/phases/01-cli-migration/01-02-SUMMARY.md

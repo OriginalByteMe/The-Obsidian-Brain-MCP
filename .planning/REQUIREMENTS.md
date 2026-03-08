@@ -7,10 +7,10 @@
 
 ### MCP SDK Migration
 
-- [ ] **SDK-01**: MCP server uses official `mcp` SDK (FastMCP) instead of `mcp-use`
-- [ ] **SDK-02**: All existing tool registrations work with FastMCP decorator API
-- [ ] **SDK-03**: All existing resource registrations work with FastMCP
-- [ ] **SDK-04**: stdio transport works identically to current behavior
+- [x] **SDK-01**: MCP server uses official `mcp` SDK (FastMCP) instead of `mcp-use`
+- [x] **SDK-02**: All existing tool registrations work with FastMCP decorator API
+- [x] **SDK-03**: All existing resource registrations work with FastMCP
+- [x] **SDK-04**: stdio transport works identically to current behavior
 - [x] **SDK-05**: `mcp-use`, `httpx`, and `pytest-httpx` removed from dependencies
 
 ### CLI Backend
@@ -26,10 +26,10 @@
 
 ### Tool Migration
 
-- [ ] **TOOL-01**: All 8 existing tool modules work with CLI backend without logic changes
+- [x] **TOOL-01**: All 8 existing tool modules work with CLI backend without logic changes
 - [ ] **TOOL-02**: Cache refresh works with CLI backend (batch operations where possible)
 - [ ] **TOOL-03**: Cache invalidates specific entries after write operations (not full refresh required)
-- [ ] **TOOL-04**: Existing MCP tool response shapes are preserved (backward compatible)
+- [x] **TOOL-04**: Existing MCP tool response shapes are preserved (backward compatible)
 - [x] **TOOL-05**: Integration tests capture current behavior before migration begins
 
 ### New MCP Tools
