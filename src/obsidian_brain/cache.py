@@ -120,6 +120,32 @@ class VaultCache:
                 tag_counts[tag] = tag_counts.get(tag, 0) + 1
         return tag_counts
 
+    def invalidate_path(self, path: str) -> None:
+        """
+        Invalidate cached data for a specific note path.
+
+        Removes the note from the cached structure so stale data isn't served.
+        A full refresh() is needed to get updated data for this path.
+
+        Args:
+            path: Note path to invalidate
+        """
+        if self._structure is None:
+            return
+
+        # Remove note from cached notes list
+        self._structure.notes = [
+            n for n in self._structure.notes if n.path != path
+        ]
+
+        # Remove from backlink index
+        self._backlink_index.pop(path, None)
+
+        # Remove references to this path in other backlink entries
+        for target, sources in self._backlink_index.items():
+            if path in sources:
+                sources.remove(path)
+
     def get_notes_by_tag(self, tag: str) -> list[str]:
         """
         Get all note paths that have a specific tag.

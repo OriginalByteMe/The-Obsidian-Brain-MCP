@@ -5,18 +5,14 @@ Exposes the cached vault structure as an MCP resource.
 """
 
 import json
-from typing import TYPE_CHECKING
 
 from ..cache import CacheNotInitializedError, vault_cache
 
-if TYPE_CHECKING:
-    from mcp_use.server import MCPServer
 
-
-def register_structure_resource(server: "MCPServer") -> None:
+def register_structure_resource(server) -> None:
     """Register the vault structure resource with the MCP server."""
 
-    @server.resource(uri="vault://structure", mime_type="application/json")
+    @server.resource("vault://structure")
     def vault_structure() -> str:
         """
         Returns the cached vault structure including folders, notes with metadata,
@@ -42,7 +38,7 @@ def register_structure_resource(server: "MCPServer") -> None:
         except CacheNotInitializedError:
             return '{"error": "Vault structure not initialized. Call refresh_vault_structure tool first."}'
 
-    @server.resource(uri="vault://tags", mime_type="application/json")
+    @server.resource("vault://tags")
     def vault_tags() -> str:
         """
         Returns all tags used in the vault with their usage counts.
@@ -58,7 +54,7 @@ def register_structure_resource(server: "MCPServer") -> None:
         except CacheNotInitializedError:
             return '{"error": "Vault structure not initialized. Call refresh_vault_structure tool first."}'
 
-    @server.resource(uri="vault://stats", mime_type="application/json")
+    @server.resource("vault://stats")
     def vault_stats() -> str:
         """
         Returns aggregate statistics about the vault.

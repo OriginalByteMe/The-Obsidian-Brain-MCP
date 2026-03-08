@@ -5,18 +5,21 @@ Provides tools for managing persistent memories that store cross-session
 context about the vault.
 """
 
+from __future__ import annotations
+
 import json
 from typing import TYPE_CHECKING
 
-from ..client import NoteNotFoundError, ObsidianAPIError, ObsidianClient
+from ..cache import vault_cache
+from ..exceptions import NoteNotFoundError, ObsidianCLIError
 from ..memory import memory_manager
 from ..onboarding import MEMORIES_PATH
 
 if TYPE_CHECKING:
-    from mcp_use.server import MCPServer
+    from ..protocol import VaultClient
 
 
-def register_memory_tools(server: "MCPServer") -> None:
+def register_memory_tools(server, client: VaultClient) -> None:
     """Register all memory tools with the MCP server."""
 
     @server.tool()
@@ -34,41 +37,40 @@ def register_memory_tools(server: "MCPServer") -> None:
             - type: memory type from frontmatter (if set)
             - updated: last update timestamp (if available)
         """
-        async with ObsidianClient() as client:
-            try:
-                # List all files in memories folder
-                all_files = await client.get_all_files("/")
-                memory_files = memory_manager.list_from_files(all_files)
+        try:
+            # List all files in memories folder
+            all_files = await client.get_all_files("/")
+            memory_files = memory_manager.list_from_files(all_files)
 
-                # Get metadata for each memory
-                memories = []
-                for mem_info in memory_files:
-                    try:
-                        data = await client.get_note(mem_info["path"], include_metadata=True)
-                        frontmatter = data.get("frontmatter", {})
-                        memories.append({
-                            "name": mem_info["name"],
-                            "path": mem_info["path"],
-                            "type": frontmatter.get("type"),
-                            "created": frontmatter.get("created"),
-                            "updated": frontmatter.get("updated"),
-                        })
-                    except NoteNotFoundError:
-                        # Skip if file was deleted between listing and reading
-                        pass
+            # Get metadata for each memory
+            memories = []
+            for mem_info in memory_files:
+                try:
+                    data = await client.get_note(mem_info["path"], include_metadata=True)
+                    frontmatter = data.get("frontmatter", {})
+                    memories.append({
+                        "name": mem_info["name"],
+                        "path": mem_info["path"],
+                        "type": frontmatter.get("type"),
+                        "created": frontmatter.get("created"),
+                        "updated": frontmatter.get("updated"),
+                    })
+                except NoteNotFoundError:
+                    # Skip if file was deleted between listing and reading
+                    pass
 
-                return json.dumps({
-                    "count": len(memories),
-                    "memories": memories,
-                    "memories_path": MEMORIES_PATH,
-                })
+            return json.dumps({
+                "count": len(memories),
+                "memories": memories,
+                "memories_path": MEMORIES_PATH,
+            })
 
-            except ObsidianAPIError as e:
-                return json.dumps({
-                    "error": True,
-                    "type": "ObsidianAPIError",
-                    "message": str(e),
-                })
+        except ObsidianCLIError as e:
+            return json.dumps({
+                "error": True,
+                "type": "ObsidianCLIError",
+                "message": str(e),
+            })
 
     @server.tool()
     async def read_memory(name: str) -> str:
@@ -86,42 +88,41 @@ def register_memory_tools(server: "MCPServer") -> None:
         """
         path = memory_manager.get_memory_path(name)
 
-        async with ObsidianClient() as client:
-            try:
-                data = await client.get_note(path, include_metadata=True)
-                content = data.get("content", "")
-                frontmatter = data.get("frontmatter", {})
+        try:
+            data = await client.get_note(path, include_metadata=True)
+            content = data.get("content", "")
+            frontmatter = data.get("frontmatter", {})
 
-                # Parse the memory
-                memory = memory_manager.parse_memory(
-                    f"---\n{_format_frontmatter(frontmatter)}---\n\n{content}",
-                    name,
-                )
+            # Parse the memory
+            memory = memory_manager.parse_memory(
+                f"---\n{_format_frontmatter(frontmatter)}---\n\n{content}",
+                name,
+            )
 
-                return json.dumps({
-                    "name": name,
-                    "path": path,
-                    "content": memory.content,
-                    "type": memory.memory_type,
-                    "created": memory.created,
-                    "updated": memory.updated,
-                    "frontmatter": frontmatter,
-                })
+            return json.dumps({
+                "name": name,
+                "path": path,
+                "content": memory.content,
+                "type": memory.memory_type,
+                "created": memory.created,
+                "updated": memory.updated,
+                "frontmatter": frontmatter,
+            })
 
-            except NoteNotFoundError:
-                return json.dumps({
-                    "error": True,
-                    "type": "MemoryNotFoundError",
-                    "message": f"Memory '{name}' not found",
-                    "path": path,
-                    "suggestion": "Use list_memories to see available memories",
-                })
-            except ObsidianAPIError as e:
-                return json.dumps({
-                    "error": True,
-                    "type": "ObsidianAPIError",
-                    "message": str(e),
-                })
+        except NoteNotFoundError:
+            return json.dumps({
+                "error": True,
+                "type": "MemoryNotFoundError",
+                "message": f"Memory '{name}' not found",
+                "path": path,
+                "suggestion": "Use list_memories to see available memories",
+            })
+        except ObsidianCLIError as e:
+            return json.dumps({
+                "error": True,
+                "type": "ObsidianCLIError",
+                "message": str(e),
+            })
 
     @server.tool()
     async def write_memory(
@@ -149,40 +150,43 @@ def register_memory_tools(server: "MCPServer") -> None:
         """
         path = memory_manager.get_memory_path(name)
 
-        async with ObsidianClient() as client:
+        try:
+            # Check if memory already exists
             try:
-                # Check if memory already exists
-                try:
-                    existing = await client.get_note(path, include_metadata=False)
-                    existing_content = existing.get("content", "")
-                    # Update existing memory
-                    full_content = memory_manager.update_memory_content(
-                        existing_content, content
-                    )
-                    action = "updated"
-                except NoteNotFoundError:
-                    # Create new memory
-                    full_content = memory_manager.create_memory_content(
-                        content, memory_type=memory_type
-                    )
-                    action = "created"
+                existing = await client.get_note(path, include_metadata=False)
+                existing_content = existing.get("content", "")
+                # Update existing memory
+                full_content = memory_manager.update_memory_content(
+                    existing_content, content
+                )
+                action = "updated"
+            except NoteNotFoundError:
+                # Create new memory
+                full_content = memory_manager.create_memory_content(
+                    content, memory_type=memory_type
+                )
+                action = "created"
 
-                await client.create_note(path, full_content)
+            await client.create_note(path, full_content)
 
-                return json.dumps({
-                    "success": True,
-                    "action": action,
-                    "name": name,
-                    "path": path,
-                    "message": f"Memory '{name}' {action} successfully",
-                })
+            # Invalidate cache for memories path after write
+            if vault_cache.is_initialized:
+                vault_cache.invalidate_path(path)
 
-            except ObsidianAPIError as e:
-                return json.dumps({
-                    "error": True,
-                    "type": "ObsidianAPIError",
-                    "message": str(e),
-                })
+            return json.dumps({
+                "success": True,
+                "action": action,
+                "name": name,
+                "path": path,
+                "message": f"Memory '{name}' {action} successfully",
+            })
+
+        except ObsidianCLIError as e:
+            return json.dumps({
+                "error": True,
+                "type": "ObsidianCLIError",
+                "message": str(e),
+            })
 
     @server.tool()
     async def delete_memory(name: str) -> str:
@@ -199,30 +203,33 @@ def register_memory_tools(server: "MCPServer") -> None:
         """
         path = memory_manager.get_memory_path(name)
 
-        async with ObsidianClient() as client:
-            try:
-                await client.delete_note(path)
+        try:
+            await client.delete_note(path)
 
-                return json.dumps({
-                    "success": True,
-                    "name": name,
-                    "path": path,
-                    "message": f"Memory '{name}' deleted successfully",
-                })
+            # Invalidate cache after delete
+            if vault_cache.is_initialized:
+                vault_cache.invalidate_path(path)
 
-            except NoteNotFoundError:
-                return json.dumps({
-                    "error": True,
-                    "type": "MemoryNotFoundError",
-                    "message": f"Memory '{name}' not found",
-                    "path": path,
-                })
-            except ObsidianAPIError as e:
-                return json.dumps({
-                    "error": True,
-                    "type": "ObsidianAPIError",
-                    "message": str(e),
-                })
+            return json.dumps({
+                "success": True,
+                "name": name,
+                "path": path,
+                "message": f"Memory '{name}' deleted successfully",
+            })
+
+        except NoteNotFoundError:
+            return json.dumps({
+                "error": True,
+                "type": "MemoryNotFoundError",
+                "message": f"Memory '{name}' not found",
+                "path": path,
+            })
+        except ObsidianCLIError as e:
+            return json.dumps({
+                "error": True,
+                "type": "ObsidianCLIError",
+                "message": str(e),
+            })
 
     @server.tool()
     async def edit_memory(
@@ -247,57 +254,60 @@ def register_memory_tools(server: "MCPServer") -> None:
 
         path = memory_manager.get_memory_path(name)
 
-        async with ObsidianClient() as client:
-            try:
-                data = await client.get_note(path, include_metadata=False)
-                content = data.get("content", "")
+        try:
+            data = await client.get_note(path, include_metadata=False)
+            content = data.get("content", "")
 
-                if mode == "regex":
-                    try:
-                        pattern = re.compile(search, re.DOTALL | re.MULTILINE)
-                        new_content, count = pattern.subn(replace, content)
-                    except re.error as e:
-                        return json.dumps({
-                            "error": True,
-                            "type": "RegexError",
-                            "message": f"Invalid regex pattern: {e}",
-                        })
-                else:
-                    count = content.count(search)
-                    new_content = content.replace(search, replace)
-
-                if count == 0:
+            if mode == "regex":
+                try:
+                    pattern = re.compile(search, re.DOTALL | re.MULTILINE)
+                    new_content, count = pattern.subn(replace, content)
+                except re.error as e:
                     return json.dumps({
-                        "success": False,
-                        "message": "Pattern not found in memory",
-                        "name": name,
+                        "error": True,
+                        "type": "RegexError",
+                        "message": f"Invalid regex pattern: {e}",
                     })
+            else:
+                count = content.count(search)
+                new_content = content.replace(search, replace)
 
-                # Update the memory with new content
-                full_content = memory_manager.update_memory_content(content, new_content)
-                await client.create_note(path, full_content)
-
+            if count == 0:
                 return json.dumps({
-                    "success": True,
+                    "success": False,
+                    "message": "Pattern not found in memory",
                     "name": name,
-                    "path": path,
-                    "replacements": count,
-                    "message": f"Made {count} replacement(s) in memory '{name}'",
                 })
 
-            except NoteNotFoundError:
-                return json.dumps({
-                    "error": True,
-                    "type": "MemoryNotFoundError",
-                    "message": f"Memory '{name}' not found",
-                    "path": path,
-                })
-            except ObsidianAPIError as e:
-                return json.dumps({
-                    "error": True,
-                    "type": "ObsidianAPIError",
-                    "message": str(e),
-                })
+            # Update the memory with new content
+            full_content = memory_manager.update_memory_content(content, new_content)
+            await client.create_note(path, full_content)
+
+            # Invalidate cache after edit
+            if vault_cache.is_initialized:
+                vault_cache.invalidate_path(path)
+
+            return json.dumps({
+                "success": True,
+                "name": name,
+                "path": path,
+                "replacements": count,
+                "message": f"Made {count} replacement(s) in memory '{name}'",
+            })
+
+        except NoteNotFoundError:
+            return json.dumps({
+                "error": True,
+                "type": "MemoryNotFoundError",
+                "message": f"Memory '{name}' not found",
+                "path": path,
+            })
+        except ObsidianCLIError as e:
+            return json.dumps({
+                "error": True,
+                "type": "ObsidianCLIError",
+                "message": str(e),
+            })
 
 
 def _format_frontmatter(frontmatter: dict) -> str:

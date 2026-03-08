@@ -4,19 +4,21 @@ Knowledge base resource for Obsidian Brain MCP.
 Exposes the persistent knowledge base file as an MCP resource.
 """
 
+from __future__ import annotations
+
 from typing import TYPE_CHECKING
 
-from ..client import NoteNotFoundError, ObsidianAPIError, ObsidianClient
+from ..exceptions import NoteNotFoundError, ObsidianCLIError
 from ..knowledge import KNOWLEDGE_BASE_PATH
 
 if TYPE_CHECKING:
-    from mcp_use.server import MCPServer
+    from ..protocol import VaultClient
 
 
-def register_knowledge_resource(server: "MCPServer") -> None:
+def register_knowledge_resource(server, client: VaultClient) -> None:
     """Register the knowledge base resource with the MCP server."""
 
-    @server.resource(uri="vault://knowledge", mime_type="text/markdown")
+    @server.resource("vault://knowledge")
     async def vault_knowledge() -> str:
         """
         Returns the persistent vault knowledge base content.
@@ -38,12 +40,11 @@ def register_knowledge_resource(server: "MCPServer") -> None:
         Returns:
             Markdown content of the knowledge base, or instructions if not found
         """
-        async with ObsidianClient() as client:
-            try:
-                data = await client.get_note(KNOWLEDGE_BASE_PATH, include_metadata=False)
-                return data.get("content", "")
-            except NoteNotFoundError:
-                return f"""# Knowledge Base Not Found
+        try:
+            data = await client.get_note(KNOWLEDGE_BASE_PATH, include_metadata=False)
+            return data.get("content", "")
+        except NoteNotFoundError:
+            return f"""# Knowledge Base Not Found
 
 The vault knowledge base has not been generated yet.
 
@@ -66,8 +67,8 @@ Once generated, the knowledge base provides:
 This file persists across sessions, so you only need to regenerate it
 when your vault structure changes significantly.
 """
-            except ObsidianAPIError as e:
-                return f"""# Error Reading Knowledge Base
+        except ObsidianCLIError as e:
+            return f"""# Error Reading Knowledge Base
 
 An error occurred while reading the knowledge base:
 

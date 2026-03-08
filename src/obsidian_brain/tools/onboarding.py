@@ -5,18 +5,20 @@ Provides tools for checking and performing vault onboarding, which includes
 vault analysis and configuration generation.
 """
 
+from __future__ import annotations
+
 import json
 from typing import TYPE_CHECKING
 
 from ..cache import CacheNotInitializedError, vault_cache
-from ..client import ObsidianAPIError, ObsidianClient
+from ..exceptions import ObsidianCLIError
 from ..onboarding import CONFIG_PATH, MEMORIES_PATH, onboarding_manager
 
 if TYPE_CHECKING:
-    from mcp_use.server import MCPServer
+    from ..protocol import VaultClient
 
 
-def register_onboarding_tools(server: "MCPServer") -> None:
+def register_onboarding_tools(server, client: VaultClient) -> None:
     """Register all onboarding tools with the MCP server."""
 
     @server.tool()
@@ -34,20 +36,19 @@ def register_onboarding_tools(server: "MCPServer") -> None:
             - message: human-readable status
             - recommendation: suggested next action
         """
-        async with ObsidianClient() as client:
-            try:
-                # List root to check for .obsidian-brain folder
-                all_files = await client.get_all_files("/")
+        try:
+            # List root to check for .obsidian-brain folder
+            all_files = await client.get_all_files("/")
 
-                status = onboarding_manager.check_onboarding_status(all_files)
-                return json.dumps(status)
+            status = onboarding_manager.check_onboarding_status(all_files)
+            return json.dumps(status)
 
-            except ObsidianAPIError as e:
-                return json.dumps({
-                    "error": True,
-                    "type": "ObsidianAPIError",
-                    "message": str(e),
-                })
+        except ObsidianCLIError as e:
+            return json.dumps({
+                "error": True,
+                "type": "ObsidianCLIError",
+                "message": str(e),
+            })
 
     @server.tool()
     async def run_onboarding() -> str:
@@ -93,50 +94,49 @@ def register_onboarding_tools(server: "MCPServer") -> None:
         overview_memory = onboarding_manager.generate_vault_overview_memory(analysis)
         conventions_memory = onboarding_manager.generate_conventions_memory(analysis)
 
-        async with ObsidianClient() as client:
-            try:
-                files_created = []
+        try:
+            files_created = []
 
-                # Create config.yml
-                await client.create_note(CONFIG_PATH, config_content)
-                files_created.append(CONFIG_PATH)
+            # Create config.yml
+            await client.create_note(CONFIG_PATH, config_content)
+            files_created.append(CONFIG_PATH)
 
-                # Create vault-overview memory
-                overview_path = f"{MEMORIES_PATH}/vault-overview.md"
-                await client.create_note(overview_path, overview_memory)
-                files_created.append(overview_path)
+            # Create vault-overview memory
+            overview_path = f"{MEMORIES_PATH}/vault-overview.md"
+            await client.create_note(overview_path, overview_memory)
+            files_created.append(overview_path)
 
-                # Create conventions memory
-                conventions_path = f"{MEMORIES_PATH}/conventions.md"
-                await client.create_note(conventions_path, conventions_memory)
-                files_created.append(conventions_path)
+            # Create conventions memory
+            conventions_path = f"{MEMORIES_PATH}/conventions.md"
+            await client.create_note(conventions_path, conventions_memory)
+            files_created.append(conventions_path)
 
-                return json.dumps({
-                    "success": True,
-                    "message": "Vault onboarding completed successfully",
-                    "analysis_summary": {
-                        "organizational_systems": analysis.folder_patterns,
-                        "folder_purposes": analysis.folder_purposes,
-                        "tag_prefixes": analysis.tag_prefixes,
-                        "tag_count": len(analysis.top_tags),
-                        "templates_found": len(analysis.templates_found),
-                        "naming_patterns": analysis.naming_patterns,
-                        "common_frontmatter_keys": analysis.common_frontmatter_keys[:5],
-                    },
-                    "files_created": files_created,
-                    "next_steps": [
-                        "Review the generated config at .obsidian-brain/config.yml",
-                        "Read memories with list_memories and read_memory",
-                        "Create custom memories as you learn about the vault",
-                    ],
-                })
+            return json.dumps({
+                "success": True,
+                "message": "Vault onboarding completed successfully",
+                "analysis_summary": {
+                    "organizational_systems": analysis.folder_patterns,
+                    "folder_purposes": analysis.folder_purposes,
+                    "tag_prefixes": analysis.tag_prefixes,
+                    "tag_count": len(analysis.top_tags),
+                    "templates_found": len(analysis.templates_found),
+                    "naming_patterns": analysis.naming_patterns,
+                    "common_frontmatter_keys": analysis.common_frontmatter_keys[:5],
+                },
+                "files_created": files_created,
+                "next_steps": [
+                    "Review the generated config at .obsidian-brain/config.yml",
+                    "Read memories with list_memories and read_memory",
+                    "Create custom memories as you learn about the vault",
+                ],
+            })
 
-            except ObsidianAPIError as e:
-                return json.dumps({
-                    "error": True,
-                    "type": "ObsidianAPIError",
-                    "message": str(e),
-                })
+        except ObsidianCLIError as e:
+            return json.dumps({
+                "error": True,
+                "type": "ObsidianCLIError",
+                "message": str(e),
+            })
 
     @server.tool()
     async def get_vault_config() -> str:
@@ -153,20 +153,19 @@ def register_onboarding_tools(server: "MCPServer") -> None:
         Returns:
             JSON with config content or error if not onboarded
         """
-        async with ObsidianClient() as client:
-            try:
-                data = await client.get_note(CONFIG_PATH, include_metadata=False)
-                content = data.get("content", "")
+        try:
+            data = await client.get_note(CONFIG_PATH, include_metadata=False)
+            content = data.get("content", "")
 
-                return json.dumps({
-                    "exists": True,
-                    "path": CONFIG_PATH,
-                    "content": content,
-                })
+            return json.dumps({
+                "exists": True,
+                "path": CONFIG_PATH,
+                "content": content,
+            })
 
-            except Exception:
-                return json.dumps({
-                    "exists": False,
-                    "path": CONFIG_PATH,
-                    "message": "Vault not onboarded. Run run_onboarding first.",
-                })
+        except Exception:
+            return json.dumps({
+                "exists": False,
+                "path": CONFIG_PATH,
+                "message": "Vault not onboarded. Run run_onboarding first.",
+            })
