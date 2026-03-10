@@ -24,7 +24,22 @@
       "mcp__serena__list_memories",
       "Bash(python -c:*)",
       "Bash(docker logs:*)",
-      "mcp__serena__search_for_pattern"
+      "mcp__serena__search_for_pattern",
+      "Bash(grep:*)",
+      "Bash(node:*)",
+      "Bash(git:*)",
+      "WebSearch",
+      "Bash(obsidian:*)",
+      "Read(//home/noahr/**)",
+      "Bash(ls:*)",
+      "Bash(/usr/bin/obsidian read:*)",
+      "Bash(/usr/bin/obsidian tags:*)",
+      "Bash(/usr/bin/obsidian daily:read:*)",
+      "Bash(/usr/bin/obsidian search:*)",
+      "Bash(python:*)",
+      "Bash(python3:*)",
+      "WebFetch(domain:help.obsidian.md)",
+      "WebFetch(domain:publish-01.obsidian.md)"
     ]
   },
   "enableAllProjectMcpServers": true,

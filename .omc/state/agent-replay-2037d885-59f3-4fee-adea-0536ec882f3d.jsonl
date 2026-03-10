@@ -1,0 +1,8 @@
+{"t":0,"agent":"a617f76","agent_type":"gsd-codebase-mapper","event":"agent_start","parent_mode":"none"}
+{"t":0,"agent":"aabe2e1","agent_type":"gsd-codebase-mapper","event":"agent_start","parent_mode":"none"}
+{"t":0,"agent":"aea4fa9","agent_type":"gsd-codebase-mapper","event":"agent_start","parent_mode":"none"}
+{"t":0,"agent":"ae812bb","agent_type":"gsd-codebase-mapper","event":"agent_start","parent_mode":"none"}
+{"t":0,"agent":"a617f76","agent_type":"gsd-codebase-mapper","event":"agent_stop","success":true,"duration_ms":110259}
+{"t":0,"agent":"ae812bb","agent_type":"gsd-codebase-mapper","event":"agent_stop","success":true,"duration_ms":233765}
+{"t":0,"agent":"aabe2e1","agent_type":"gsd-codebase-mapper","event":"agent_stop","success":true,"duration_ms":247621}
+{"t":0,"agent":"aea4fa9","agent_type":"gsd-codebase-mapper","event":"agent_stop","success":true,"duration_ms":317899}

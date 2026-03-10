@@ -34,6 +34,21 @@ def _make_mock_process(stdout: str = "", stderr: str = "", returncode: int = 0):
 
 
 # ---------------------------------------------------------------------------
+# Auto-patch: skip Obsidian-running check in all tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _skip_obsidian_running_check():
+    """Bypass the pre-flight check that requires a running Obsidian instance."""
+    with patch(
+        "obsidian_brain.cli_client._check_obsidian_running",
+        new_callable=AsyncMock,
+    ):
+        yield
+
+
+# ---------------------------------------------------------------------------
 # Binary Detection
 # ---------------------------------------------------------------------------
 
@@ -169,27 +184,25 @@ class TestVaultClientMethods:
 
     @pytest.mark.asyncio
     async def test_get_note(self, client):
-        """Should call obsidian read with path and format=json."""
-        note_data = {
-            "path": "test.md",
-            "content": "# Test",
-            "tags": ["test"],
-            "frontmatter": {},
-            "modified": None,
-        }
-        proc = _make_mock_process(stdout=json.dumps(note_data))
+        """Should call obsidian read with path and parse raw markdown."""
+        raw_md = "---\ntags:\n- test\ntitle: Test Note\n---\n# Test"
+        proc = _make_mock_process(stdout=raw_md)
         with patch("obsidian_brain.cli_client.asyncio.create_subprocess_exec", return_value=proc) as mock_exec:
             result = await client.get_note("test.md")
             assert result["path"] == "test.md"
             assert result["content"] == "# Test"
+            assert result["tags"] == ["test"]
+            assert result["frontmatter"]["title"] == "Test Note"
             # Verify CLI command structure
             call_args = mock_exec.call_args[0]
             assert "read" in call_args
+            # format=json should NOT be passed
+            assert "format=json" not in call_args
 
     @pytest.mark.asyncio
     async def test_note_exists_true(self, client):
         """Should return True when note exists."""
-        proc = _make_mock_process(stdout=json.dumps({"content": "hi"}))
+        proc = _make_mock_process(stdout="# Hello")
         with patch("obsidian_brain.cli_client.asyncio.create_subprocess_exec", return_value=proc):
             assert await client.note_exists("test.md") is True
 
@@ -241,26 +254,27 @@ class TestVaultClientMethods:
 
     @pytest.mark.asyncio
     async def test_list_directory(self, client):
-        """Should call obsidian files with folder arg."""
-        file_list = [
-            {"name": "note.md", "type": "file"},
-            {"name": "subfolder", "type": "folder"},
-        ]
-        proc = _make_mock_process(stdout=json.dumps(file_list))
+        """Should call obsidian files with folder arg and parse plain text."""
+        # The CLI files command returns plain text, one entry per line
+        plain_output = "note.md\nsubfolder/\n"
+        proc = _make_mock_process(stdout=plain_output)
         with patch("obsidian_brain.cli_client.asyncio.create_subprocess_exec", return_value=proc) as mock_exec:
             result = await client.list_directory("Projects")
             assert len(result) == 2
+            assert result[0] == {"name": "note.md", "type": "file"}
+            assert result[1] == {"name": "subfolder", "type": "folder"}
             call_args = mock_exec.call_args[0]
             assert "files" in call_args
 
     @pytest.mark.asyncio
     async def test_get_all_files(self, client):
-        """Should call obsidian files with ext=md."""
-        files = ["file1.md", "folder/file2.md"]
-        proc = _make_mock_process(stdout=json.dumps(files))
+        """Should call obsidian files with ext=md and parse plain text."""
+        # The CLI files command returns plain text, one path per line
+        plain_output = "file1.md\nfolder/file2.md\n"
+        proc = _make_mock_process(stdout=plain_output)
         with patch("obsidian_brain.cli_client.asyncio.create_subprocess_exec", return_value=proc) as mock_exec:
             result = await client.get_all_files()
-            assert len(result) == 2
+            assert result == ["file1.md", "folder/file2.md"]
             call_args = mock_exec.call_args[0]
             assert "files" in call_args
 
@@ -277,14 +291,16 @@ class TestVaultClientMethods:
 
     @pytest.mark.asyncio
     async def test_get_daily_note(self, client):
-        """Should call obsidian daily:read."""
-        daily = {"content": "# Today", "tags": [], "frontmatter": {}}
-        proc = _make_mock_process(stdout=json.dumps(daily))
+        """Should call obsidian daily:read and parse raw markdown."""
+        raw_md = "---\ntags:\n- daily\ndate: \"2026-03-08\"\n---\n# Today"
+        proc = _make_mock_process(stdout=raw_md)
         with patch("obsidian_brain.cli_client.asyncio.create_subprocess_exec", return_value=proc) as mock_exec:
             result = await client.get_daily_note()
             assert result["content"] == "# Today"
+            assert result["tags"] == ["daily"]
             call_args = mock_exec.call_args[0]
             assert "daily:read" in call_args
+            assert "format=json" not in call_args
 
     @pytest.mark.asyncio
     async def test_append_daily(self, client):

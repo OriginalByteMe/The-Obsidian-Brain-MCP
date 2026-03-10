@@ -2,8 +2,14 @@
   "mcpServers": {
     "obsidian-brain": {
       "type": "stdio",
-      "command": "docker",
-      "args": ["compose", "run", "--rm", "-T", "--build", "obsidian-brain"]
+      "command": ".venv/bin/python",
+      "args": [
+        "-m",
+        "obsidian_brain.server"
+      ],
+      "env": {
+        "PYTHONPATH": "src"
+      }
     }
   }
 }

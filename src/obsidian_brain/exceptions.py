@@ -79,3 +79,24 @@ class CLINotFoundError(Exception):
             message = f"Searched: {searched_paths}\n\n{message}"
         self.searched_paths = searched_paths
         super().__init__(message)
+
+
+class ObsidianNotRunningError(Exception):
+    """Raised when Obsidian desktop app is not running.
+
+    The Obsidian 1.12+ CLI works via IPC -- it sends commands to a running
+    Obsidian instance. If Obsidian is not running, CLI commands will hang
+    indefinitely (launching a new Electron instance that waits for GUI
+    interaction instead of processing CLI commands).
+    """
+
+    def __init__(self) -> None:
+        super().__init__(
+            "Obsidian desktop app is not running.\n\n"
+            "The Obsidian CLI requires a running Obsidian instance to process "
+            "commands via IPC. Without it, CLI calls will hang indefinitely.\n\n"
+            "To fix this:\n"
+            "1. Open Obsidian desktop app\n"
+            "2. Wait for it to fully load your vault\n"
+            "3. Then retry the MCP tool call"
+        )

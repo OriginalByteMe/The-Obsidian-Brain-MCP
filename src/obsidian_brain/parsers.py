@@ -27,29 +27,107 @@ def _ensure_list(data: list | str) -> list:
     return data
 
 
-def parse_note_read(data: dict | str) -> dict[str, Any]:
-    """Parse CLI JSON output from `obsidian read path="..." format=json`.
+def _parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:
+    """Extract YAML frontmatter from markdown text.
 
-    Expected input shape:
-        {
-            "path": "Projects/MyProject.md",
-            "content": "# My Project\\n...",
-            "tags": ["project", "active"],
-            "frontmatter": {"title": "My Project", ...},
-            "modified": "2026-03-01T10:30:00Z"
-        }
+    Returns (frontmatter_dict, body) where body is the content after
+    the closing ``---``.  If no frontmatter is found, returns ({}, text).
+    """
+    stripped = text.lstrip("\n")
+    if not stripped.startswith("---"):
+        return {}, text
+
+    end = stripped.find("---", 3)
+    if end == -1:
+        return {}, text
+
+    yaml_block = stripped[3:end].strip()
+    body = stripped[end + 3:].lstrip("\n")
+
+    # Simple YAML-like key: value parsing (avoids PyYAML dependency)
+    frontmatter: dict[str, Any] = {}
+    current_key: str | None = None
+    current_list: list[str] | None = None
+
+    for line in yaml_block.splitlines():
+        line_stripped = line.strip()
+        if not line_stripped:
+            continue
+
+        # List item under a key
+        if line_stripped.startswith("- ") and current_key is not None:
+            if current_list is None:
+                current_list = []
+            current_list.append(line_stripped[2:].strip().strip('"').strip("'"))
+            frontmatter[current_key] = current_list
+            continue
+
+        # Key: value pair
+        if ":" in line_stripped:
+            # Flush previous list
+            current_list = None
+            colon_idx = line_stripped.index(":")
+            key = line_stripped[:colon_idx].strip()
+            value = line_stripped[colon_idx + 1:].strip()
+            current_key = key
+            if value:
+                # Remove surrounding quotes
+                value = value.strip('"').strip("'")
+                frontmatter[key] = value
+            # else: value will be set by list items or left empty
+
+    return frontmatter, body
+
+
+def parse_note_read(data: dict | str, path: str = "") -> dict[str, Any]:
+    """Parse output from `obsidian read path="..."`.
+
+    The CLI returns raw markdown text (not JSON).  This function
+    extracts YAML frontmatter and tags from the content.
+
+    Also handles the legacy dict format for backward compatibility
+    with tests.
 
     Returns:
         Normalized dict with keys: path, content, tags, frontmatter, modified.
-        Missing fields default to empty values.
     """
-    d = _ensure_dict(data)
+    # Legacy dict format (from tests / future JSON support)
+    if isinstance(data, dict):
+        return {
+            "path": data.get("path", path),
+            "content": data.get("content", ""),
+            "tags": data.get("tags", []),
+            "frontmatter": data.get("frontmatter", {}),
+            "modified": data.get("modified", None),
+        }
+
+    # Try JSON string (legacy compat)
+    if isinstance(data, str) and data.lstrip().startswith("{"):
+        try:
+            d = json.loads(data)
+            if isinstance(d, dict):
+                return {
+                    "path": d.get("path", path),
+                    "content": d.get("content", ""),
+                    "tags": d.get("tags", []),
+                    "frontmatter": d.get("frontmatter", {}),
+                    "modified": d.get("modified", None),
+                }
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+    # Raw markdown string from CLI
+    frontmatter, body = _parse_frontmatter(data)
+    tags = frontmatter.pop("tags", [])
+    if isinstance(tags, str):
+        tags = [t.strip() for t in tags.split(",")]
+
     return {
-        "path": d.get("path", ""),
-        "content": d.get("content", ""),
-        "tags": d.get("tags", []),
-        "frontmatter": d.get("frontmatter", {}),
-        "modified": d.get("modified", None),
+        "path": path,
+        "content": body,
+        "tags": tags,
+        "frontmatter": frontmatter,
+        "modified": None,
     }
 
 
@@ -133,21 +211,45 @@ def parse_tags(data: dict | list | str) -> dict[str, int]:
 
 
 def parse_daily(data: dict | str) -> dict[str, Any]:
-    """Parse CLI JSON output from `obsidian daily:read format=json`.
+    """Parse output from `obsidian daily:read`.
 
-    Expected input shape:
-        {
-            "content": "# 2026-03-08\\n...",
-            "tags": ["daily"],
-            "frontmatter": {"date": "2026-03-08"}
-        }
+    The CLI returns raw markdown text (not JSON).  This function
+    extracts YAML frontmatter and tags from the content.
+
+    Also handles the legacy dict format for backward compatibility.
 
     Returns:
         Normalized dict with keys: content, tags, frontmatter.
     """
-    d = _ensure_dict(data)
+    # Legacy dict format
+    if isinstance(data, dict):
+        return {
+            "content": data.get("content", ""),
+            "tags": data.get("tags", []),
+            "frontmatter": data.get("frontmatter", {}),
+        }
+
+    # Try JSON string (legacy compat)
+    if isinstance(data, str) and data.lstrip().startswith("{"):
+        try:
+            d = json.loads(data)
+            if isinstance(d, dict):
+                return {
+                    "content": d.get("content", ""),
+                    "tags": d.get("tags", []),
+                    "frontmatter": d.get("frontmatter", {}),
+                }
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+    # Raw markdown string from CLI
+    frontmatter, body = _parse_frontmatter(data)
+    tags = frontmatter.pop("tags", [])
+    if isinstance(tags, str):
+        tags = [t.strip() for t in tags.split(",")]
+
     return {
-        "content": d.get("content", ""),
-        "tags": d.get("tags", []),
-        "frontmatter": d.get("frontmatter", {}),
+        "content": body,
+        "tags": tags,
+        "frontmatter": frontmatter,
     }
