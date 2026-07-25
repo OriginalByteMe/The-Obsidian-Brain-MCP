@@ -14,11 +14,16 @@ def _parse_markdown(text: str) -> dict[str, Any]:
         post = frontmatter.loads(stripped)
     except YAMLError:
         return {"content": text, "tags": [], "frontmatter": {}}
+
     metadata = post.metadata
     if post.handler is None:
         content = text
     else:
-        _, content = post.handler.split(stripped)
+        try:
+            _, content = post.handler.split(stripped)
+        except ValueError:
+            # The opening delimiter is never closed: treat it all as content.
+            return {"content": text, "tags": [], "frontmatter": {}}
         content = content.lstrip("\n")
 
     tags = metadata.pop("tags", [])
@@ -48,7 +53,8 @@ def parse_search_results(data: str) -> list[dict[str, Any]]:
     """Group grep-style ``path:line: text`` search output by file."""
     matches_by_path: dict[str, list[str]] = {}
     for line in data.splitlines():
-        match = re.match(r"^(.+?\.md):\d+: ?(.*)$", line, flags=re.IGNORECASE)
+        # Any extension: search covers notes, canvases and bases.
+        match = re.match(r"^(.+?\.[A-Za-z0-9]+):\d+: ?(.*)$", line)
         if match:
             matches_by_path.setdefault(match.group(1), []).append(match.group(2))
 

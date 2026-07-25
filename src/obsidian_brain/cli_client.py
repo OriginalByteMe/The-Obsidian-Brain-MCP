@@ -34,6 +34,7 @@ _OBSIDIAN_LOG_RE = re.compile(
     r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} Load(?:ed|ing) updated app package(?: .*)?$"
 )
 _ENOENT_RE = re.compile(r"\bENOENT\b", re.IGNORECASE)
+_ENOENT_PATH_RE = re.compile(r"open\s+['\"](?P<path>[^'\"]+)['\"]", re.IGNORECASE)
 _NOTE_TARGET_COMMANDS = frozenset({"read", "append", "delete"})
 _OBSIDIAN_RUNNING_TTL = 5.0
 _clock = time.monotonic
@@ -49,6 +50,24 @@ def _is_missing_note(stderr: str, target_path: str) -> bool:
     return (
         re.search(rf"(?:^|[\s'\"/]){target}(?:$|[\s'\",;)])", stderr.replace("\\", "/")) is not None
     )
+
+
+def _missing_note_path(args: tuple[str, ...], stderr: str) -> str | None:
+    """Return the missing note's path when the failure is a file ENOENT."""
+    if not args:
+        return None
+    command = args[0]
+    target = next((arg.removeprefix("path=") for arg in args if arg.startswith("path=")), None)
+
+    if command in _NOTE_TARGET_COMMANDS and target is not None:
+        return target if _is_missing_note(stderr, target) else None
+
+    # Daily commands resolve their own target, so trust the ENOENT itself.
+    if command.startswith("daily:") and _ENOENT_RE.search(stderr):
+        named = _ENOENT_PATH_RE.search(stderr)
+        return named.group("path") if named else "daily note"
+
+    return None
 
 
 def find_cli_binary() -> str:
@@ -213,17 +232,9 @@ class ObsidianCLIClient:
 
         if proc.returncode != 0:
             stderr_text = stderr.decode().strip()
-            path_arg = next(
-                (arg.removeprefix("path=") for arg in args if arg.startswith("path=")),
-                None,
-            )
-            if (
-                args
-                and args[0] in _NOTE_TARGET_COMMANDS
-                and path_arg is not None
-                and _is_missing_note(stderr_text, path_arg)
-            ):
-                raise NoteNotFoundError(path_arg, command=cmd)
+            missing = _missing_note_path(args, stderr_text)
+            if missing is not None:
+                raise NoteNotFoundError(missing, command=cmd)
             raise ObsidianCLIError(
                 returncode=proc.returncode,
                 stderr=stderr_text,
@@ -328,6 +339,13 @@ class ObsidianCLIClient:
     # -------------------------------------------------------------------------
     # Daily Notes
     # -------------------------------------------------------------------------
+
+    async def get_daily_path(self, date: str | None = None) -> str:
+        """Resolve the daily note's vault-relative path, created or not."""
+        args = ["daily:path"]
+        if date:
+            args.append(f"date={date}")
+        return (await self._run(*args)).strip()
 
     async def get_daily_note(self, date: str | None = None) -> dict[str, Any]:
         """Get today's daily note (or a specific date's).

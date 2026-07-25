@@ -47,6 +47,18 @@ class TestParseNoteRead:
             "modified": None,
         }
 
+    def test_unterminated_frontmatter_falls_back_to_raw_content(self):
+        raw = "---\ntags: project\n# Never closed\n"
+
+        assert parse_note_read(raw, path="Unterminated.md") == {
+            "path": "Unterminated.md",
+            "raw": raw,
+            "content": raw,
+            "tags": [],
+            "frontmatter": {},
+            "modified": None,
+        }
+
     def test_without_frontmatter_keeps_the_return_shape(self):
         result = parse_note_read("# Plain note", path="Plain.md")
 
@@ -97,6 +109,19 @@ class TestParseSearchResults:
                 "matches": ["status:2027: ready"],
                 "score": 0.0,
             }
+        ]
+
+    def test_includes_non_markdown_search_hits(self):
+        output = "Board.canvas:1: needle\nQueries/Tasks.base:3: needle too\n"
+
+        assert parse_search_results(output) == [
+            {"path": "Board.canvas", "matches": ["needle"], "score": 0.0},
+            {"path": "Queries/Tasks.base", "matches": ["needle too"], "score": 0.0},
+        ]
+
+    def test_keeps_an_empty_match_line(self):
+        assert parse_search_results("Note.md:7:") == [
+            {"path": "Note.md", "matches": [""], "score": 0.0}
         ]
 
     def test_ignores_non_grep_text_including_legacy_json(self):

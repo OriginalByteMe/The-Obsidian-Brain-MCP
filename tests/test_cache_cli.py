@@ -537,7 +537,8 @@ async def test_sync_note_is_a_noop_before_cache_initialization():
 
 
 @pytest.mark.asyncio
-async def test_sync_note_drops_a_note_that_disappeared_during_read():
+async def test_sync_note_keeps_membership_when_the_write_is_not_readable_yet():
+    """A post-write read miss keeps membership but never serves stale metadata."""
     notes = {
         "a.md": {
             "content": "# A\n\n[[b]]",
@@ -554,11 +555,11 @@ async def test_sync_note_drops_a_note_that_disappeared_during_read():
 
     await cache.sync_note(client, "a.md")
 
-    assert cache.get_file_paths() == ["b.md"]
+    assert cache.get_file_paths() == ["a.md", "b.md"]
     assert cache.get_note_metadata("a.md") is None
     assert cache.get_all_tags() == {}
     assert cache.get_backlinks("b.md") == []
-    assert cache.get_note_metadata("b.md").incoming_links == []
+    assert cache.get_structure().stats.total_notes == 1
 
 
 @pytest.mark.asyncio

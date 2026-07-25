@@ -158,7 +158,16 @@ class VaultCache:
             try:
                 note_data = await client.get_note(path)
             except NoteNotFoundError:
-                self._invalidate_path_unlocked(path, exists=False)
+                # The write succeeded, so the file exists even when the app's
+                # index lags. Keep membership but drop the pre-write metadata
+                # rather than serving it as current; deletions come through
+                # invalidate_path(exists=False).
+                if path not in self._file_paths:
+                    self._file_paths.append(path)
+                self._structure.notes = [
+                    note for note in self._structure.notes if note.path != path
+                ]
+                self._rebuild_derived_state(self._structure)
                 return
 
             note = self._make_note_metadata(path, note_data)

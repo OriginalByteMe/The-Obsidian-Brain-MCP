@@ -203,16 +203,6 @@ def register_link_tools(server: FastMCP, client: VaultClient) -> None:
             direction = "both"
 
         try:
-            # Check cache is initialized
-            if not vault_cache.is_initialized:
-                return json.dumps(
-                    {
-                        "error": True,
-                        "type": "CacheNotInitializedError",
-                        "message": "Vault cache not initialized. Call refresh_vault_structure first.",
-                    }
-                )
-
             # BFS traversal
             visited: set[str] = set()
             nodes: list[LinkGraphNode] = []

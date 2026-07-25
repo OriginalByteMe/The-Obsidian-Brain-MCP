@@ -136,6 +136,7 @@ class MockObsidianClient:
                 }
             ]
         )
+        self.get_daily_path = AsyncMock(return_value="Daily/2024-01-15.md")
         self.get_daily_note = AsyncMock(
             return_value={
                 "content": "# Daily\n\nToday's note",

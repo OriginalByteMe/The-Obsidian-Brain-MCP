@@ -9,6 +9,7 @@ from datetime import datetime
 
 from mcp.server.fastmcp import FastMCP
 
+from ..cache import vault_cache
 from ..exceptions import NoteNotFoundError
 from ..protocol import VaultClient
 from ..utils.wikilinks import create_wikilink
@@ -17,6 +18,15 @@ from .errors import OPERATIONAL_ERRORS, error_json
 
 def register_daily_tools(server: FastMCP, client: VaultClient) -> None:
     """Register all daily note tools with the MCP server."""
+
+    async def _sync_daily_note(date: str) -> None:
+        """Refresh the written daily note in the cached index, if resolvable."""
+        try:
+            path = await client.get_daily_path(date)
+        except (NoteNotFoundError, *OPERATIONAL_ERRORS):
+            return
+        if path:
+            await vault_cache.sync_note(client, path)
 
     @server.tool()
     async def get_daily_note(date: str | None = None) -> str:
@@ -126,6 +136,7 @@ def register_daily_tools(server: FastMCP, client: VaultClient) -> None:
                 append_content = f"\n{content}"
 
             await client.append_daily(append_content, date)
+            await _sync_daily_note(date)
 
             return json.dumps(
                 {
@@ -217,6 +228,7 @@ def register_daily_tools(server: FastMCP, client: VaultClient) -> None:
 
         try:
             await client.append_daily(f"\n{entry}", date)
+            await _sync_daily_note(date)
 
             return json.dumps(
                 {

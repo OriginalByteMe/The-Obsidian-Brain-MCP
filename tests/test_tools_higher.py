@@ -68,6 +68,9 @@ class MockVaultClient:
     async def search_simple(self, query: str) -> list[dict[str, Any]]:
         return []
 
+    async def get_daily_path(self, date: str | None = None) -> str:
+        return f"Daily/{date or '2026-01-01'}.md"
+
     async def get_daily_note(self, date: str | None = None) -> dict[str, Any]:
         return {"content": "", "tags": [], "frontmatter": {}}
 

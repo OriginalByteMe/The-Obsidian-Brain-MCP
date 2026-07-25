@@ -121,6 +121,17 @@ class VaultClient(Protocol):
         """
         ...
 
+    async def get_daily_path(self, date: str | None = None) -> str:
+        """Resolve the daily note's vault-relative path, created or not.
+
+        Args:
+            date: Optional date string for a specific daily note.
+
+        Returns:
+            Vault-relative path of the daily note.
+        """
+        ...
+
     async def get_daily_note(self, date: str | None = None) -> dict[str, Any]:
         """Get today's daily note (or a specific date's).
 

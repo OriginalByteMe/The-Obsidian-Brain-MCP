@@ -11,7 +11,7 @@ class TestVaultClientProtocol:
     """Test that VaultClient Protocol is properly defined."""
 
     def test_protocol_has_all_expected_methods(self):
-        """VaultClient Protocol must define all 11 async methods."""
+        """VaultClient Protocol must define all 12 async methods."""
         expected_methods = [
             "list_directory",
             "get_all_files",
@@ -22,6 +22,7 @@ class TestVaultClientProtocol:
             "append_to_note",
             "delete_note",
             "search_simple",
+            "get_daily_path",
             "get_daily_note",
             "append_daily",
         ]
@@ -60,6 +61,8 @@ class TestVaultClientProtocol:
             async def delete_note(self, path=""): ...
 
             async def search_simple(self, query=""): ...
+
+            async def get_daily_path(self, date=None): ...
 
             async def get_daily_note(self, date=None): ...
 

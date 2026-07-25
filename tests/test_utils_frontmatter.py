@@ -40,3 +40,19 @@ def test_remove_frontmatter_tags_normalizes_supported_tag_shapes(
         assert "tags" not in post
     else:
         assert post["tags"] == expected
+
+
+def test_add_then_remove_round_trips_through_the_note_parser():
+    """A comma-scalar note survives add -> remove and stays parser-consistent."""
+    from obsidian_brain.parsers import parse_note_read
+
+    raw = "---\ntags: alpha, beta\naliases:\n  - Alias\n---\nBody\n"
+
+    added = add_frontmatter_tags(raw, ["gamma"])
+    assert parse_note_read(added, path="Note.md")["tags"] == ["alpha", "beta", "gamma"]
+
+    removed = remove_frontmatter_tags(added, ["beta"])
+    parsed = parse_note_read(removed, path="Note.md")
+    assert parsed["tags"] == ["alpha", "gamma"]
+    assert parsed["frontmatter"]["aliases"] == ["Alias"]
+    assert parsed["content"].strip() == "Body"

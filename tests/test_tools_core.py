@@ -55,6 +55,7 @@ class MockVaultClient:
                 }
             ]
         )
+        self.get_daily_path = AsyncMock(return_value="Daily/2026-03-08.md")
         self.get_daily_note = AsyncMock(
             return_value={
                 "content": "# 2026-03-08\n\nDaily content",
@@ -459,3 +460,19 @@ class TestDailyTools:
         client.append_daily.assert_called_once()
         data = _load_tool_result(result)
         assert data["success"] is True
+
+    @pytest.mark.anyio
+    async def test_daily_writes_sync_the_resolved_daily_note(self, setup, monkeypatch):
+        server, client = setup
+        synced: list[str] = []
+
+        async def _sync_note(_client, path: str) -> None:
+            synced.append(path)
+
+        monkeypatch.setattr("obsidian_brain.tools.daily.vault_cache.sync_note", _sync_note)
+
+        await server.call_tool("append_to_daily", {"content": "Test entry", "date": "2026-03-08"})
+        await server.call_tool("create_daily_entry", {"content": "Logged", "date": "2026-03-08"})
+
+        assert synced == ["Daily/2026-03-08.md", "Daily/2026-03-08.md"]
+        assert client.get_daily_path.await_count == 2
