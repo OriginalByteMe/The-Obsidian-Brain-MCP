@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from obsidian_brain.cache import CacheNotInitializedError, VaultCache
+from obsidian_brain.exceptions import NoteNotFoundError
 
 
 def _make_mock_client(
@@ -36,8 +37,6 @@ def _make_mock_client(
 
     client.get_note = AsyncMock(side_effect=_get_note)
 
-    # list_directory is kept for _get_directory_tree but should NOT be called
-    # during normal refresh (we use get_all_files instead)
     client.list_directory = AsyncMock(return_value=[])
 
     return client
@@ -134,8 +133,6 @@ async def test_concurrent_note_reads():
     max_concurrent = 0
     current_concurrent = 0
     lock = asyncio.Lock()
-
-    original_get_note = _make_mock_client(files, notes).get_note.side_effect
 
     async def tracking_get_note(path: str, include_metadata: bool = True):
         nonlocal max_concurrent, current_concurrent
@@ -343,17 +340,23 @@ async def test_note_read_failure_skipped():
     assert structure.notes[0].path == "good.md"
 
 
-# --- Invalidate path ---
+# --- Incremental cache updates ---
+
+
+def test_invalidate_path_requires_explicit_existence():
+    cache = VaultCache()
+
+    with pytest.raises(TypeError):
+        cache.invalidate_path("note.md")
 
 
 @pytest.mark.asyncio
-async def test_invalidate_path_removes_stale_metadata_but_tracks_file_membership():
-    """Invalidation must not serve stale metadata or lose known file paths."""
+async def test_invalidate_path_updates_membership_and_removes_note_everywhere():
     files = ["a.md", "b.md"]
     notes = {
         "a.md": {
             "content": "# A\n\nLinks to [[b]]",
-            "tags": ["test"],
+            "tags": ["old"],
             "frontmatter": {},
             "modified": None,
         },
@@ -364,20 +367,153 @@ async def test_invalidate_path_removes_stale_metadata_but_tracks_file_membership
             "modified": None,
         },
     }
+    cache = VaultCache()
+    await cache.refresh(_make_mock_client(files, notes))
+    original_metadata = cache.get_note_metadata("a.md")
+    cache.invalidate_path("a.md", exists=True)
+    assert cache.get_note_metadata("a.md") is original_metadata
 
+    cache.invalidate_path("created.md", exists=True)
+    assert cache.get_file_paths() == ["a.md", "b.md", "created.md"]
+
+    cache.invalidate_path("a.md", exists=False)
+
+    assert cache.get_file_paths() == ["b.md", "created.md"]
+    assert cache.get_note_metadata("a.md") is None
+    assert cache.get_all_tags() == {}
+    assert cache.get_backlinks("b.md") == []
+    assert cache.get_note_metadata("b.md").incoming_links == []
+    assert cache.get_structure().stats.total_notes == 1
+    assert cache.get_structure().stats.total_links == 0
+
+
+@pytest.mark.asyncio
+async def test_sync_note_replaces_metadata_tags_and_link_indexes():
+    files = ["a.md", "b.md", "c.md"]
+    notes = {
+        "a.md": {
+            "content": "# Old A\n\nLinks to [[b]]",
+            "tags": ["old"],
+            "frontmatter": {"status": "old"},
+            "modified": None,
+        },
+        "b.md": {"content": "# B", "tags": [], "frontmatter": {}, "modified": None},
+        "c.md": {"content": "# C", "tags": [], "frontmatter": {}, "modified": None},
+    }
     client = _make_mock_client(files, notes)
     cache = VaultCache()
     await cache.refresh(client)
 
-    assert cache.get_backlinks("b.md") == ["a.md"]
+    notes["a.md"] = {
+        "content": "# New A\n\nLinks to [[c]]",
+        "tags": ["new"],
+        "frontmatter": {"status": "new"},
+        "modified": None,
+    }
+    await cache.sync_note(client, "a.md")
 
-    cache.invalidate_path("a.md")
-
-    assert cache.get_note_metadata("a.md") is None
+    metadata = cache.get_note_metadata("a.md")
+    assert metadata.title == "New A"
+    assert metadata.tags == ["new"]
+    assert metadata.outgoing_links == ["c"]
+    assert metadata.frontmatter == {"status": "new"}
+    assert cache.get_all_tags() == {"new": 1}
     assert cache.get_backlinks("b.md") == []
-    assert cache.get_file_paths() == ["a.md", "b.md"]
+    assert cache.get_note_metadata("b.md").incoming_links == []
+    assert cache.get_backlinks("c.md") == ["a.md"]
+    assert cache.get_note_metadata("c.md").incoming_links == ["a.md"]
+    assert cache.get_structure().stats.total_links == 1
+    client.get_note.assert_awaited_with("a.md", include_metadata=True)
 
-    cache.invalidate_path("created.md", exists=True)
-    cache.invalidate_path("b.md", exists=False)
 
-    assert cache.get_file_paths() == ["a.md", "created.md"]
+@pytest.mark.asyncio
+async def test_sync_note_inserts_new_note_and_file_membership():
+    notes = {
+        "target.md": {
+            "content": "# Target",
+            "tags": [],
+            "frontmatter": {},
+            "modified": None,
+        }
+    }
+    client = _make_mock_client(["target.md"], notes)
+    cache = VaultCache()
+    await cache.refresh(client)
+
+    notes["folder/created.md"] = {
+        "content": "# Created\n\n[[target]]",
+        "tags": ["new"],
+        "frontmatter": {},
+        "modified": None,
+    }
+    await cache.sync_note(client, "folder/created.md")
+
+    assert cache.get_file_paths() == ["target.md", "folder/created.md"]
+    assert cache.get_note_metadata("folder/created.md").title == "Created"
+    assert cache.get_backlinks("target.md") == ["folder/created.md"]
+    assert cache.get_note_metadata("target.md").incoming_links == ["folder/created.md"]
+    assert cache.get_structure().stats.total_notes == 2
+    assert [folder.path for folder in cache.get_structure().folders] == ["folder/"]
+
+
+@pytest.mark.asyncio
+async def test_sync_note_only_tracks_non_markdown_file_membership():
+    client = _make_mock_client(["note.md"], {"note.md": {"content": "# Note"}})
+    cache = VaultCache()
+    await cache.refresh(client)
+    client.get_note.reset_mock()
+
+    await cache.sync_note(client, ".obsidian-brain/config.yml")
+
+    assert cache.get_file_paths() == ["note.md", ".obsidian-brain/config.yml"]
+    assert cache.get_note_metadata(".obsidian-brain/config.yml") is None
+    assert cache.get_structure().stats.total_notes == 1
+    client.get_note.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_sync_note_is_a_noop_before_cache_initialization():
+    client = AsyncMock()
+    cache = VaultCache()
+
+    await cache.sync_note(client, "note.md")
+
+    client.get_note.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_sync_note_drops_a_note_that_disappeared_during_read():
+    notes = {
+        "a.md": {
+            "content": "# A\n\n[[b]]",
+            "tags": ["old"],
+            "frontmatter": {},
+            "modified": None,
+        },
+        "b.md": {"content": "# B", "tags": [], "frontmatter": {}, "modified": None},
+    }
+    client = _make_mock_client(["a.md", "b.md"], notes)
+    cache = VaultCache()
+    await cache.refresh(client)
+    client.get_note = AsyncMock(side_effect=NoteNotFoundError("a.md"))
+
+    await cache.sync_note(client, "a.md")
+
+    assert cache.get_file_paths() == ["b.md"]
+    assert cache.get_note_metadata("a.md") is None
+    assert cache.get_all_tags() == {}
+    assert cache.get_backlinks("b.md") == []
+    assert cache.get_note_metadata("b.md").incoming_links == []
+
+
+@pytest.mark.asyncio
+async def test_sync_note_propagates_operational_read_failures():
+    client = _make_mock_client(["a.md"], {"a.md": {"content": "# A"}})
+    cache = VaultCache()
+    await cache.refresh(client)
+    client.get_note = AsyncMock(side_effect=RuntimeError("read failed"))
+
+    with pytest.raises(RuntimeError, match="read failed"):
+        await cache.sync_note(client, "a.md")
+
+    assert cache.get_note_metadata("a.md") is not None

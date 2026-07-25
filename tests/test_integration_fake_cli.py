@@ -183,11 +183,12 @@ async def test_real_server_against_fake_cli(tmp_path: Path, monkeypatch: pytest.
         assert files["config.yml"]["extension"] == ".yml"
         assert files["Projects/Same.md"]["uri"] == "vault://note/Projects%2FSame.md"
 
-        replacement = (
+        body = (
             "# Nested\n\n"
             "```md\n## Notes\nfenced decoy\n```\n\n"
             "## Notes\nExisting\n\nneedle nested\n"
         )
+        replacement = f"---\ntags:\n  - project\naliases:\n  - Nested\n---\n{body}"
         updated = _tool_json(
             await session.call_tool(
                 "update_note", {"path": "Projects/Same.md", "content": replacement}
@@ -197,7 +198,7 @@ async def test_real_server_against_fake_cli(tmp_path: Path, monkeypatch: pytest.
         assert root_sibling.read_text(encoding="utf-8") == "# Root sibling\n\nneedle root\n"
         assert nested.read_text(encoding="utf-8") == replacement
         after_update = await session.read_resource(_note_uri("Projects/Same.md"))
-        assert _resource_text(after_update) == replacement
+        assert _resource_text(after_update) == body
 
         appended = _tool_json(
             await session.call_tool(
@@ -211,11 +212,25 @@ async def test_real_server_against_fake_cli(tmp_path: Path, monkeypatch: pytest.
         )
         assert appended["success"] is True
         edited = nested.read_text(encoding="utf-8")
-        assert "```md\n## Notes\nfenced decoy\n```" in edited
-        assert edited.rfind("## Notes") < edited.index("inserted under real heading")
+        expected_body = body.replace(
+            "## Notes\nExisting",
+            "## Notes\ninserted under real heading\nExisting",
+        )
+        expected_edit = replacement.replace(
+            "## Notes\nExisting",
+            "## Notes\ninserted under real heading\nExisting",
+        )
+        assert edited == expected_edit
         assert root_sibling.read_text(encoding="utf-8") == "# Root sibling\n\nneedle root\n"
         after_append = await session.read_resource(_note_uri("Projects/Same.md"))
-        assert _resource_text(after_append) == edited
+        assert _resource_text(after_append) == expected_body
+        listed_tags = _tool_json(await session.call_tool("list_all_tags", {}))
+        assert listed_tags == {
+            "success": True,
+            "tags": {"project": 1},
+            "total_unique_tags": 1,
+            "total_tag_usage": 1,
+        }
 
         created = _tool_json(
             await session.call_tool(

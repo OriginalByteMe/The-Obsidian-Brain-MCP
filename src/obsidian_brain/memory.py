@@ -184,35 +184,14 @@ class MemoryManager:
         for path in files:
             if path.startswith(prefix) and path.endswith(".md"):
                 name = path[len(prefix) : -3]  # Remove prefix and .md
-                memories.append({
-                    "name": name,
-                    "path": path,
-                })
+                memories.append(
+                    {
+                        "name": name,
+                        "path": path,
+                    }
+                )
 
         return memories
-
-    def format_memory_list(self, memories: list[Memory]) -> str:
-        """
-        Format a list of memories for display.
-
-        Args:
-            memories: List of Memory objects
-
-        Returns:
-            Formatted string listing memories
-        """
-        if not memories:
-            return "No memories found."
-
-        lines = ["# Available Memories", ""]
-
-        for memory in memories:
-            type_str = f" [{memory.memory_type}]" if memory.memory_type else ""
-            lines.append(f"- **{memory.name}**{type_str}")
-            if memory.updated:
-                lines.append(f"  - Updated: {memory.updated}")
-
-        return "\n".join(lines)
 
 
 # Global singleton instance

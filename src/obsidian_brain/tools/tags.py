@@ -12,6 +12,7 @@ from ..cache import CacheNotInitializedError, vault_cache
 from ..exceptions import NoteNotFoundError
 from ..protocol import VaultClient
 from ..utils.frontmatter import add_frontmatter_tags, remove_frontmatter_tags
+from .errors import OPERATIONAL_ERRORS, error_json
 
 
 def register_tag_tools(server: FastMCP, client: VaultClient) -> None:
@@ -33,11 +34,13 @@ def register_tag_tools(server: FastMCP, client: VaultClient) -> None:
             Confirmation with updated tag list
         """
         if not tags:
-            return json.dumps({
-                "error": True,
-                "type": "ValidationError",
-                "message": "No tags provided to add",
-            })
+            return json.dumps(
+                {
+                    "error": True,
+                    "type": "ValidationError",
+                    "message": "No tags provided to add",
+                }
+            )
 
         # Normalize tags (remove # if present)
         normalized_tags = [t.lstrip("#") for t in tags]
@@ -45,7 +48,7 @@ def register_tag_tools(server: FastMCP, client: VaultClient) -> None:
         try:
             # Get current content
             data = await client.get_note(path, include_metadata=True)
-            content = data.get("content", "")
+            content = data.get("raw", data.get("content", ""))
             current_tags = data.get("tags", [])
 
             # Add new tags
@@ -53,23 +56,31 @@ def register_tag_tools(server: FastMCP, client: VaultClient) -> None:
 
             # Update the note
             await client.update_note(path, new_content)
+            if vault_cache.is_initialized:
+                await vault_cache.sync_note(client, path)
 
             # Get updated tag list
             updated_tags = sorted(set(current_tags + normalized_tags))
 
-            return json.dumps({
-                "success": True,
-                "path": path,
-                "added_tags": normalized_tags,
-                "all_tags": updated_tags,
-                "message": f"Added {len(normalized_tags)} tag(s) to {path}",
-            })
+            return json.dumps(
+                {
+                    "success": True,
+                    "path": path,
+                    "added_tags": normalized_tags,
+                    "all_tags": updated_tags,
+                    "message": f"Added {len(normalized_tags)} tag(s) to {path}",
+                }
+            )
         except NoteNotFoundError:
-            return json.dumps({
-                "error": True,
-                "type": "NoteNotFoundError",
-                "message": f"Note not found: {path}",
-            })
+            return json.dumps(
+                {
+                    "error": True,
+                    "type": "NoteNotFoundError",
+                    "message": f"Note not found: {path}",
+                }
+            )
+        except OPERATIONAL_ERRORS as error:
+            return error_json(error)
 
     @server.tool()
     async def remove_tags(path: str, tags: list[str]) -> str:
@@ -86,11 +97,13 @@ def register_tag_tools(server: FastMCP, client: VaultClient) -> None:
             Confirmation with updated tag list
         """
         if not tags:
-            return json.dumps({
-                "error": True,
-                "type": "ValidationError",
-                "message": "No tags provided to remove",
-            })
+            return json.dumps(
+                {
+                    "error": True,
+                    "type": "ValidationError",
+                    "message": "No tags provided to remove",
+                }
+            )
 
         # Normalize tags
         normalized_tags = [t.lstrip("#") for t in tags]
@@ -98,7 +111,7 @@ def register_tag_tools(server: FastMCP, client: VaultClient) -> None:
         try:
             # Get current content
             data = await client.get_note(path, include_metadata=True)
-            content = data.get("content", "")
+            content = data.get("raw", data.get("content", ""))
             current_tags = data.get("tags", [])
 
             # Remove tags
@@ -106,23 +119,33 @@ def register_tag_tools(server: FastMCP, client: VaultClient) -> None:
 
             # Update the note
             await client.update_note(path, new_content)
+            if vault_cache.is_initialized:
+                await vault_cache.sync_note(client, path)
 
             # Calculate remaining tags
-            remaining_tags = [t for t in current_tags if t.lower() not in [x.lower() for x in normalized_tags]]
+            remaining_tags = [
+                t for t in current_tags if t.lower() not in [x.lower() for x in normalized_tags]
+            ]
 
-            return json.dumps({
-                "success": True,
-                "path": path,
-                "removed_tags": normalized_tags,
-                "remaining_tags": remaining_tags,
-                "message": f"Removed {len(normalized_tags)} tag(s) from {path}",
-            })
+            return json.dumps(
+                {
+                    "success": True,
+                    "path": path,
+                    "removed_tags": normalized_tags,
+                    "remaining_tags": remaining_tags,
+                    "message": f"Removed {len(normalized_tags)} tag(s) from {path}",
+                }
+            )
         except NoteNotFoundError:
-            return json.dumps({
-                "error": True,
-                "type": "NoteNotFoundError",
-                "message": f"Note not found: {path}",
-            })
+            return json.dumps(
+                {
+                    "error": True,
+                    "type": "NoteNotFoundError",
+                    "message": f"Note not found: {path}",
+                }
+            )
+        except OPERATIONAL_ERRORS as error:
+            return error_json(error)
 
     @server.tool()
     async def list_all_tags() -> str:
@@ -139,22 +162,24 @@ def register_tag_tools(server: FastMCP, client: VaultClient) -> None:
             tag_counts = vault_cache.get_all_tags()
 
             # Sort by count (descending), then by name
-            sorted_tags = dict(
-                sorted(tag_counts.items(), key=lambda x: (-x[1], x[0]))
-            )
+            sorted_tags = dict(sorted(tag_counts.items(), key=lambda x: (-x[1], x[0])))
 
-            return json.dumps({
-                "success": True,
-                "tags": sorted_tags,
-                "total_unique_tags": len(sorted_tags),
-                "total_tag_usage": sum(sorted_tags.values()),
-            })
+            return json.dumps(
+                {
+                    "success": True,
+                    "tags": sorted_tags,
+                    "total_unique_tags": len(sorted_tags),
+                    "total_tag_usage": sum(sorted_tags.values()),
+                }
+            )
         except CacheNotInitializedError:
-            return json.dumps({
-                "error": True,
-                "type": "CacheNotInitializedError",
-                "message": "Vault cache not initialized. Call refresh_vault_structure first.",
-            })
+            return json.dumps(
+                {
+                    "error": True,
+                    "type": "CacheNotInitializedError",
+                    "message": "Vault cache not initialized. Call refresh_vault_structure first.",
+                }
+            )
 
     @server.tool()
     async def get_notes_by_tag(tag: str) -> str:
@@ -176,15 +201,19 @@ def register_tag_tools(server: FastMCP, client: VaultClient) -> None:
         try:
             note_paths = vault_cache.get_notes_by_tag(normalized_tag)
 
-            return json.dumps({
-                "success": True,
-                "tag": normalized_tag,
-                "notes": sorted(note_paths),
-                "count": len(note_paths),
-            })
+            return json.dumps(
+                {
+                    "success": True,
+                    "tag": normalized_tag,
+                    "notes": sorted(note_paths),
+                    "count": len(note_paths),
+                }
+            )
         except CacheNotInitializedError:
-            return json.dumps({
-                "error": True,
-                "type": "CacheNotInitializedError",
-                "message": "Vault cache not initialized. Call refresh_vault_structure first.",
-            })
+            return json.dumps(
+                {
+                    "error": True,
+                    "type": "CacheNotInitializedError",
+                    "message": "Vault cache not initialized. Call refresh_vault_structure first.",
+                }
+            )

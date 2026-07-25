@@ -189,6 +189,7 @@ def _create_mock_vault_cache():
 
     mock_cache.get_structure.return_value = mock_structure
     mock_cache.refresh = AsyncMock(return_value=mock_structure)
+    mock_cache.sync_note = AsyncMock()
     mock_cache.get_backlinks.return_value = ["note1.md", "note2.md"]
     mock_cache.get_all_tags.return_value = {"test": 5, "example": 3}
     mock_cache.get_notes_by_tag.return_value = ["test.md", "example.md"]
@@ -360,19 +361,63 @@ class TestLinkToolShapes:
     """Verify link tool response shapes match frozen snapshots."""
 
     @pytest.mark.asyncio
-    async def test_add_backlink_shape(self, mock_server, mock_client):
-        # Mock get_note to return content without the target link
-        mock_client.get_note.return_value = {
-            "content": "# Test\n\nSome content",
-            "tags": [],
-            "frontmatter": {},
-        }
-        result = await mock_server.tools["add_backlink"](
-            source_path="test.md", target_note="Other Note"
+    async def test_add_backlink_shape(self, mock_server, mock_client, mock_cache):
+        raw = (
+            "---\n"
+            "tags:\n"
+            "  - project\n"
+            "  - active\n"
+            "aliases:\n"
+            "  - Test Alias\n"
+            "---\n"
+            "# Test\n\nSome content\n"
         )
+        mock_client.get_note.return_value = {
+            "content": "# Test\n\nSome content\n",
+            "raw": raw,
+            "tags": ["project", "active"],
+            "frontmatter": {"aliases": ["Test Alias"]},
+        }
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr("obsidian_brain.tools.links.vault_cache", mock_cache)
+            result = await mock_server.tools["add_backlink"](
+                source_path="test.md", target_note="Other Note"
+            )
         assert isinstance(result, str)
         data = json.loads(result)
         assert_matches_shape(data, FROZEN_SHAPES["add_backlink"])
+        mock_client.update_note.assert_awaited_once_with(
+            "test.md",
+            "---\n"
+            "tags:\n"
+            "  - project\n"
+            "  - active\n"
+            "aliases:\n"
+            "  - Test Alias\n"
+            "---\n"
+            "# Test\n\nSome content\n\n"
+            "## See Also\n\n"
+            "- [[Other Note]]\n",
+        )
+        mock_cache.sync_note.assert_awaited_once_with(mock_client, "test.md")
+
+    @pytest.mark.asyncio
+    async def test_add_backlink_reuses_existing_see_also_section(
+        self, mock_server, mock_client, mock_cache
+    ):
+        raw = "# Test\n\nSome content\n\n## See Also\n\n- [[First Note]]\n"
+        mock_client.get_note.return_value = {
+            "content": raw,
+            "raw": raw,
+            "tags": [],
+            "frontmatter": {},
+        }
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr("obsidian_brain.tools.links.vault_cache", mock_cache)
+            await mock_server.tools["add_backlink"](source_path="test.md", target_note="Other Note")
+        written = mock_client.update_note.await_args[0][1]
+        assert written.count("## See Also") == 1
+        assert "- [[First Note]]\n- [[Other Note]]" in written
 
     @pytest.mark.asyncio
     async def test_get_backlinks_shape(self, mock_server, mock_cache):
@@ -409,18 +454,70 @@ class TestTagToolShapes:
     """Verify tag tool response shapes match frozen snapshots."""
 
     @pytest.mark.asyncio
-    async def test_add_tags_shape(self, mock_server, mock_client):
-        result = await mock_server.tools["add_tags"](path="test.md", tags=["newtag"])
+    async def test_add_tags_shape(self, mock_server, mock_client, mock_cache):
+        mock_client.get_note.return_value = {
+            "content": "# Test\n\nSome content\n",
+            "raw": (
+                "---\n"
+                "tags:\n"
+                "  - project\n"
+                "  - active\n"
+                "aliases:\n"
+                "  - Test Alias\n"
+                "---\n"
+                "# Test\n\nSome content\n"
+            ),
+            "tags": ["project", "active"],
+            "frontmatter": {"aliases": ["Test Alias"]},
+        }
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr("obsidian_brain.tools.tags.vault_cache", mock_cache)
+            result = await mock_server.tools["add_tags"](path="test.md", tags=["newtag"])
         assert isinstance(result, str)
         data = json.loads(result)
         assert_matches_shape(data, FROZEN_SHAPES["add_tags"])
+        mock_client.update_note.assert_awaited_once_with(
+            "test.md",
+            "---\n"
+            "aliases:\n"
+            "- Test Alias\n"
+            "tags:\n"
+            "- active\n"
+            "- newtag\n"
+            "- project\n"
+            "---\n\n"
+            "# Test\n\nSome content",
+        )
+        mock_cache.sync_note.assert_awaited_once_with(mock_client, "test.md")
 
     @pytest.mark.asyncio
-    async def test_remove_tags_shape(self, mock_server, mock_client):
-        result = await mock_server.tools["remove_tags"](path="test.md", tags=["test"])
+    async def test_remove_tags_shape(self, mock_server, mock_client, mock_cache):
+        mock_client.get_note.return_value = {
+            "content": "# Test\n\nSome content\n",
+            "raw": (
+                "---\n"
+                "tags:\n"
+                "  - project\n"
+                "  - active\n"
+                "aliases:\n"
+                "  - Test Alias\n"
+                "---\n"
+                "# Test\n\nSome content\n"
+            ),
+            "tags": ["project", "active"],
+            "frontmatter": {"aliases": ["Test Alias"]},
+        }
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr("obsidian_brain.tools.tags.vault_cache", mock_cache)
+            result = await mock_server.tools["remove_tags"](path="test.md", tags=["active"])
         assert isinstance(result, str)
         data = json.loads(result)
         assert_matches_shape(data, FROZEN_SHAPES["remove_tags"])
+        mock_client.update_note.assert_awaited_once_with(
+            "test.md",
+            "---\naliases:\n- Test Alias\ntags:\n- project\n---\n\n# Test\n\nSome content",
+        )
+        mock_cache.sync_note.assert_awaited_once_with(mock_client, "test.md")
 
     @pytest.mark.asyncio
     async def test_list_all_tags_shape(self, mock_server, mock_cache):
@@ -609,9 +706,11 @@ class TestMemoryToolShapes:
         mock_mem_mgr = MagicMock()
         mock_mem_mgr.get_memory_path.return_value = ".obsidian-brain/memories/test.md"
         mock_mem_mgr.update_memory_content.return_value = "Updated content"
+        raw = "---\ntype: learning\ncreated: 2024-01-15\n---\nOld content with findme text"
         mock_client.get_note.return_value = {
             "content": "Old content with findme text",
-            "frontmatter": {},
+            "raw": raw,
+            "frontmatter": {"type": "learning", "created": "2024-01-15"},
             "tags": [],
         }
         with pytest.MonkeyPatch.context() as mp:
@@ -622,6 +721,9 @@ class TestMemoryToolShapes:
         assert isinstance(result, str)
         data = json.loads(result)
         assert_matches_shape(data, FROZEN_SHAPES["edit_memory"])
+        mock_mem_mgr.update_memory_content.assert_called_once_with(
+            raw, "Old content with replaced text"
+        )
 
 
 # ---------------------------------------------------------------------------

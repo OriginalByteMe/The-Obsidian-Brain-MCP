@@ -81,6 +81,17 @@ def _load_tool_result(result: tuple[list[Any], dict[str, str]]) -> Any:
     return json.loads(metadata["result"])
 
 
+def test_shared_operational_error_contract():
+    from obsidian_brain.tools.errors import error_json
+
+    error = CLINotFoundError()
+    assert json.loads(error_json(error)) == {
+        "error": True,
+        "type": "CLINotFoundError",
+        "message": str(error),
+    }
+
+
 class TestVaultTools:
     """Test vault tool module with mocked VaultClient."""
 
@@ -159,9 +170,11 @@ class TestVaultTools:
         client.update_note.assert_awaited_once_with("test.md", f"{current}\n\n## Notes\n\nNew item")
 
     @pytest.mark.anyio
-    async def test_append_heading_matches_exact_markdown_heading(self, setup):
+    async def test_append_heading_preserves_frontmatter_and_targets_real_heading(self, setup):
         server, client = setup
-        client.get_note.return_value = {"content": "# Title\n\n## Notes\nExisting item"}
+        body = "# Title\n\n```markdown\n## Notes\nfenced decoy\n```\n\n## Notes\nExisting item"
+        raw = f"---\ntags:\n  - project\naliases:\n  - Project notes\n---\n{body}"
+        client.get_note.return_value = {"content": body, "raw": raw}
 
         await server.call_tool(
             "append_to_note",
@@ -169,15 +182,29 @@ class TestVaultTools:
         )
 
         client.update_note.assert_awaited_once_with(
-            "test.md", "# Title\n\n## Notes\nNew item\nExisting item"
+            "test.md",
+            "---\n"
+            "tags:\n"
+            "  - project\n"
+            "aliases:\n"
+            "  - Project notes\n"
+            "---\n"
+            "# Title\n\n"
+            "```markdown\n## Notes\nfenced decoy\n```\n\n"
+            "## Notes\nNew item\nExisting item",
         )
 
     @pytest.mark.anyio
-    async def test_writes_invalidate_cached_note(self, setup, monkeypatch):
+    async def test_writes_sync_cached_notes_and_remove_deletions(self, setup, monkeypatch):
         from obsidian_brain.tools import vault as vault_tools
 
-        server, _ = setup
+        server, client = setup
+        synced: list[str] = []
         invalidated: list[tuple[str, bool]] = []
+
+        async def record_sync(sync_client, path: str) -> None:
+            assert sync_client is client
+            synced.append(path)
 
         def record_invalidation(path: str, *, exists: bool) -> None:
             invalidated.append((path, exists))
@@ -187,6 +214,7 @@ class TestVaultTools:
             "vault_cache",
             SimpleNamespace(
                 is_initialized=True,
+                sync_note=record_sync,
                 invalidate_path=record_invalidation,
             ),
         )
@@ -196,12 +224,54 @@ class TestVaultTools:
         await server.call_tool("append_to_note", {"path": "appended.md", "content": "Appended"})
         await server.call_tool("delete_note", {"path": "deleted.md"})
 
-        assert invalidated == [
-            ("created.md", True),
-            ("updated.md", True),
-            ("appended.md", True),
-            ("deleted.md", False),
-        ]
+        assert synced == ["created.md", "updated.md", "appended.md"]
+        assert invalidated == [("deleted.md", False)]
+
+    @pytest.mark.anyio
+    async def test_update_note_refreshes_cached_tags_and_links(self, setup, monkeypatch):
+        from obsidian_brain.cache import VaultCache
+        from obsidian_brain.tools import vault as vault_tools
+
+        server, client = setup
+        state: dict[str, dict[str, Any]] = {
+            "source.md": {
+                "content": "# Source\n\n[[Old]]",
+                "tags": ["old"],
+                "frontmatter": {},
+            },
+            "Old.md": {"content": "# Old", "tags": [], "frontmatter": {}},
+            "Target.md": {"content": "# Target", "tags": [], "frontmatter": {}},
+        }
+        client.get_all_files.return_value = list(state)
+
+        async def get_note(path: str, include_metadata: bool = True) -> dict[str, Any]:
+            return state[path]
+
+        async def update_note(path: str, content: str) -> None:
+            state[path] = {
+                "content": content,
+                "tags": ["new"],
+                "frontmatter": {},
+            }
+
+        client.get_note.side_effect = get_note
+        client.update_note.side_effect = update_note
+        cache = VaultCache()
+        await cache.refresh(client)
+        monkeypatch.setattr(vault_tools, "vault_cache", cache)
+
+        result = await server.call_tool(
+            "update_note",
+            {"path": "source.md", "content": "# Source\n\n[[Target]]"},
+        )
+
+        assert _load_tool_result(result)["success"] is True
+        source = cache.get_note_metadata("source.md")
+        assert source is not None
+        assert source.tags == ["new"]
+        assert source.outgoing_links == ["Target"]
+        assert cache.get_backlinks("Old.md") == []
+        assert cache.get_backlinks("Target.md") == ["source.md"]
 
     @pytest.mark.parametrize(
         ("error", "error_type"),

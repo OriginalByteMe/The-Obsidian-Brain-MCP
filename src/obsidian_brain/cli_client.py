@@ -9,7 +9,6 @@ The CLI binary is located via shutil.which with OBSIDIAN_CLI_PATH env var overri
 """
 
 import asyncio
-import json
 import os
 import re
 import shutil
@@ -28,18 +27,28 @@ from .parsers import (
     parse_daily,
     parse_note_read,
     parse_search_results,
-    parse_tags,
 )
 
 # Match only the known startup message, not arbitrary timestamped note content.
 _OBSIDIAN_LOG_RE = re.compile(
     r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} Load(?:ed|ing) updated app package(?: .*)?$"
 )
-_MISSING_NOTE_RE = re.compile(r"\b(?:ENOENT|no such file|not found)\b", re.IGNORECASE)
-_NOTE_TARGET_COMMANDS = frozenset({"read", "append", "delete", "backlinks", "links"})
+_ENOENT_RE = re.compile(r"\bENOENT\b", re.IGNORECASE)
+_NOTE_TARGET_COMMANDS = frozenset({"read", "append", "delete"})
 _OBSIDIAN_RUNNING_TTL = 5.0
 _clock = time.monotonic
 _obsidian_running_until = 0.0
+
+
+def _is_missing_note(stderr: str, target_path: str) -> bool:
+    """Classify an ENOENT failure only when stderr names the targeted note."""
+    if not _ENOENT_RE.search(stderr):
+        return False
+    target = re.escape(str(PurePosixPath(target_path)))
+    # Require path-segment boundaries so "other-note.md" never matches "note.md".
+    return (
+        re.search(rf"(?:^|[\s'\"/]){target}(?:$|[\s'\",;)])", stderr.replace("\\", "/")) is not None
+    )
 
 
 def find_cli_binary() -> str:
@@ -212,7 +221,7 @@ class ObsidianCLIClient:
                 args
                 and args[0] in _NOTE_TARGET_COMMANDS
                 and path_arg is not None
-                and _MISSING_NOTE_RE.search(stderr_text)
+                and _is_missing_note(stderr_text, path_arg)
             ):
                 raise NoteNotFoundError(path_arg, command=cmd)
             raise ObsidianCLIError(
@@ -222,21 +231,6 @@ class ObsidianCLIClient:
             )
 
         return _filter_log_lines(stdout.decode())
-
-    async def _run_json(self, *args: str, timeout: float | None = None) -> Any:
-        """Execute a CLI command and parse JSON output.
-
-        Appends format=json to the args and parses the result.
-
-        Args:
-            *args: CLI command arguments.
-            timeout: Override default timeout.
-
-        Returns:
-            Parsed JSON data.
-        """
-        output = await self._run(*args, "format=json", timeout=timeout)
-        return json.loads(output)
 
     # -------------------------------------------------------------------------
     # Directory Operations
@@ -331,8 +325,8 @@ class ObsidianCLIClient:
     # Search Operations
     # -------------------------------------------------------------------------
 
-    async def search_simple(self, query: str, context_length: int = 100) -> list[dict[str, Any]]:
-        """Search with matching lines; context_length is kept for protocol compatibility."""
+    async def search_simple(self, query: str) -> list[dict[str, Any]]:
+        """Search the vault and return each matching file with its matching lines."""
         output = await self._run("search:context", f"query={query}", "format=text")
         return parse_search_results(output)
 
@@ -359,28 +353,3 @@ class ObsidianCLIClient:
         if date:
             args.append(f"date={date}")
         await self._run(*args)
-
-    # -------------------------------------------------------------------------
-    # Tags and Links
-    # -------------------------------------------------------------------------
-
-    async def get_tags(self) -> dict[str, int]:
-        """Get all tags in the vault with their counts."""
-        data = await self._run_json("tags")
-        return parse_tags(data)
-
-    async def get_backlinks(self, path: str) -> list[str]:
-        """Get notes that link to the specified note."""
-        _validate_path(path)
-        data = await self._run_json("backlinks", f"path={path}")
-        if isinstance(data, list):
-            return [item if isinstance(item, str) else item.get("path", "") for item in data]
-        return []
-
-    async def get_links(self, path: str) -> list[str]:
-        """Get outgoing links from the specified note."""
-        _validate_path(path)
-        data = await self._run_json("links", f"path={path}")
-        if isinstance(data, list):
-            return [item if isinstance(item, str) else item.get("path", "") for item in data]
-        return []

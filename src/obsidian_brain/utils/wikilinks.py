@@ -85,7 +85,7 @@ def inject_wikilink(
 
     # Check for existing section (case-insensitive)
     section_pattern = re.compile(
-        rf"^(#{1,6})\s*{re.escape(section)}\s*$", re.MULTILINE | re.IGNORECASE
+        rf"^(#{{1,6}})\s*{re.escape(section)}\s*$", re.MULTILINE | re.IGNORECASE
     )
     match = section_pattern.search(content)
 
@@ -96,9 +96,7 @@ def inject_wikilink(
         heading_level = len(match.group(1))
 
         # Find next heading of same or higher level
-        next_heading_pattern = re.compile(
-            rf"^#{{{1},{heading_level}}}\s+", re.MULTILINE
-        )
+        next_heading_pattern = re.compile(rf"^#{{{1},{heading_level}}}\s+", re.MULTILINE)
         next_match = next_heading_pattern.search(content, section_start)
 
         if next_match:
@@ -136,93 +134,3 @@ def create_wikilink(target: str, alias: str | None = None) -> str:
     if alias:
         return f"[[{target}|{alias}]]"
     return f"[[{target}]]"
-
-
-def resolve_wikilink(
-    link: str, current_path: str, all_notes: list[str]
-) -> str | None:
-    """
-    Resolve a wikilink to a full path.
-
-    Handles:
-    - Full paths: [[folder/note]]
-    - Relative: [[note]] (searches vault for best match)
-    - Aliases: [[note|alias]] (extracts note part)
-
-    Args:
-        link: The wikilink target (without [[ ]])
-        current_path: Path of the note containing the link
-        all_notes: List of all note paths in vault
-
-    Returns:
-        Resolved full path, or None if not found
-
-    Example:
-        >>> resolve_wikilink("Note A", "Folder/Current.md", ["Note A.md", "Folder/Note A.md"])
-        'Folder/Note A.md'  # Prefers same folder
-    """
-    # Normalize link
-    link = link.strip()
-
-    # Build lookup maps
-    name_to_paths: dict[str, list[str]] = {}
-    for path in all_notes:
-        # Get filename without extension
-        name = path.split("/")[-1]
-        if name.endswith(".md"):
-            name = name[:-3]
-        name_lower = name.lower()
-
-        if name_lower not in name_to_paths:
-            name_to_paths[name_lower] = []
-        name_to_paths[name_lower].append(path)
-
-    # Try exact path match first
-    link_lower = link.lower()
-    for path in all_notes:
-        path_no_ext = path[:-3] if path.endswith(".md") else path
-        if path_no_ext.lower() == link_lower or path.lower() == link_lower:
-            return path
-
-    # Try with .md extension
-    link_with_md = f"{link}.md"
-    for path in all_notes:
-        if path.lower() == link_with_md.lower():
-            return path
-
-    # Try name-only match
-    link_name = link.split("/")[-1].lower()
-    candidates = name_to_paths.get(link_name, [])
-
-    if not candidates:
-        return None
-
-    if len(candidates) == 1:
-        return candidates[0]
-
-    # Multiple matches - prefer same folder as current note
-    current_folder = "/".join(current_path.split("/")[:-1])
-    for candidate in candidates:
-        candidate_folder = "/".join(candidate.split("/")[:-1])
-        if candidate_folder == current_folder:
-            return candidate
-
-    # Return first match
-    return candidates[0]
-
-
-def normalize_note_name(name: str) -> str:
-    """
-    Normalize a note name for comparison.
-
-    Removes .md extension and converts to lowercase.
-
-    Args:
-        name: Note name or path
-
-    Returns:
-        Normalized name
-    """
-    if name.endswith(".md"):
-        name = name[:-3]
-    return name.lower()

@@ -13,14 +13,7 @@ from ..exceptions import NoteNotFoundError
 from ..models import LinkGraph, LinkGraphEdge, LinkGraphNode
 from ..protocol import VaultClient
 from ..utils.wikilinks import contains_wikilink, extract_wikilinks, inject_wikilink
-
-
-class InvalidBacklinkError(Exception):
-    """Raised when a backlink target doesn't exist."""
-
-    def __init__(self, target: str):
-        self.target = target
-        super().__init__(f"Backlink target does not exist: {target}")
+from .errors import OPERATIONAL_ERRORS, error_json
 
 
 def register_link_tools(server: FastMCP, client: VaultClient) -> None:
@@ -50,55 +43,71 @@ def register_link_tools(server: FastMCP, client: VaultClient) -> None:
             add_backlink("Projects/AI.md", "Research/Papers", "See also")
             # Adds: "- See also [[Research/Papers]]" to Projects/AI.md
         """
-        # Validate target exists
-        target_path = (
-            target_note if target_note.endswith(".md") else f"{target_note}.md"
-        )
-        exists = await client.note_exists(target_path)
+        try:
+            # Validate target exists
+            target_path = target_note if target_note.endswith(".md") else f"{target_note}.md"
+            exists = await client.note_exists(target_path)
+
+            if not exists:
+                # Try without folder prefix
+                simple_name = target_path.split("/")[-1]
+                exists = await client.note_exists(simple_name)
+        except OPERATIONAL_ERRORS as error:
+            return error_json(error)
 
         if not exists:
-            # Try without folder prefix
-            simple_name = target_path.split("/")[-1]
-            exists = await client.note_exists(simple_name)
-
-        if not exists:
-            return json.dumps({
-                "error": True,
-                "type": "InvalidBacklinkError",
-                "message": f"Target note does not exist: {target_note}",
-            })
+            return json.dumps(
+                {
+                    "error": True,
+                    "type": "InvalidBacklinkError",
+                    "message": f"Target note does not exist: {target_note}",
+                }
+            )
 
         # Get source note content
         try:
             source_data = await client.get_note(source_path, include_metadata=False)
-            content = source_data.get("content", "")
+            content = source_data.get("raw", source_data.get("content", ""))
         except NoteNotFoundError:
-            return json.dumps({
-                "error": True,
-                "type": "NoteNotFoundError",
-                "message": f"Source note not found: {source_path}",
-            })
+            return json.dumps(
+                {
+                    "error": True,
+                    "type": "NoteNotFoundError",
+                    "message": f"Source note not found: {source_path}",
+                }
+            )
+        except OPERATIONAL_ERRORS as error:
+            return error_json(error)
 
         # Check if link already exists
         if contains_wikilink(content, target_note):
-            return json.dumps({
-                "error": True,
-                "type": "LinkAlreadyExistsError",
-                "message": f"Link to {target_note} already exists in {source_path}",
-            })
+            return json.dumps(
+                {
+                    "error": True,
+                    "type": "LinkAlreadyExistsError",
+                    "message": f"Link to {target_note} already exists in {source_path}",
+                }
+            )
 
         # Inject the wikilink
         new_content = inject_wikilink(content, target_note, context)
 
         # Update the note
-        await client.update_note(source_path, new_content)
+        try:
+            await client.update_note(source_path, new_content)
+            if vault_cache.is_initialized:
+                await vault_cache.sync_note(client, source_path)
+        except OPERATIONAL_ERRORS as error:
+            return error_json(error)
 
-        return json.dumps({
-            "success": True,
-            "source": source_path,
-            "target": target_note,
-            "message": f"Added link to [[{target_note}]] in {source_path}",
-        })
+        return json.dumps(
+            {
+                "success": True,
+                "source": source_path,
+                "target": target_note,
+                "message": f"Added link to [[{target_note}]] in {source_path}",
+            }
+        )
 
     @server.tool()
     async def get_backlinks(path: str) -> str:
@@ -116,18 +125,22 @@ def register_link_tools(server: FastMCP, client: VaultClient) -> None:
         """
         try:
             backlinks = vault_cache.get_backlinks(path)
-            return json.dumps({
-                "success": True,
-                "path": path,
-                "backlinks": backlinks,
-                "count": len(backlinks),
-            })
+            return json.dumps(
+                {
+                    "success": True,
+                    "path": path,
+                    "backlinks": backlinks,
+                    "count": len(backlinks),
+                }
+            )
         except CacheNotInitializedError:
-            return json.dumps({
-                "error": True,
-                "type": "CacheNotInitializedError",
-                "message": "Vault cache not initialized. Call refresh_vault_structure first.",
-            })
+            return json.dumps(
+                {
+                    "error": True,
+                    "type": "CacheNotInitializedError",
+                    "message": "Vault cache not initialized. Call refresh_vault_structure first.",
+                }
+            )
 
     @server.tool()
     async def get_outgoing_links(path: str) -> str:
@@ -147,18 +160,24 @@ def register_link_tools(server: FastMCP, client: VaultClient) -> None:
             content = data.get("content", "")
             links = extract_wikilinks(content)
 
-            return json.dumps({
-                "success": True,
-                "path": path,
-                "outgoing_links": links,
-                "count": len(links),
-            })
+            return json.dumps(
+                {
+                    "success": True,
+                    "path": path,
+                    "outgoing_links": links,
+                    "count": len(links),
+                }
+            )
         except NoteNotFoundError:
-            return json.dumps({
-                "error": True,
-                "type": "NoteNotFoundError",
-                "message": f"Note not found: {path}",
-            })
+            return json.dumps(
+                {
+                    "error": True,
+                    "type": "NoteNotFoundError",
+                    "message": f"Note not found: {path}",
+                }
+            )
+        except OPERATIONAL_ERRORS as error:
+            return error_json(error)
 
     @server.tool()
     async def get_linked_notes(
@@ -187,11 +206,13 @@ def register_link_tools(server: FastMCP, client: VaultClient) -> None:
         try:
             # Check cache is initialized
             if not vault_cache.is_initialized:
-                return json.dumps({
-                    "error": True,
-                    "type": "CacheNotInitializedError",
-                    "message": "Vault cache not initialized. Call refresh_vault_structure first.",
-                })
+                return json.dumps(
+                    {
+                        "error": True,
+                        "type": "CacheNotInitializedError",
+                        "message": "Vault cache not initialized. Call refresh_vault_structure first.",
+                    }
+                )
 
             # BFS traversal
             visited: set[str] = set()
@@ -223,19 +244,23 @@ def register_link_tools(server: FastMCP, client: VaultClient) -> None:
                         # Resolve link to path
                         resolved = _resolve_link_to_path(link)
                         if resolved and resolved not in visited:
-                            edges.append(LinkGraphEdge(
-                                source=current_path,
-                                target=resolved,
-                            ))
+                            edges.append(
+                                LinkGraphEdge(
+                                    source=current_path,
+                                    target=resolved,
+                                )
+                            )
                             queue.append((resolved, current_depth + 1))
 
                 if direction in ("incoming", "both"):
                     for backlink_path in note_meta.incoming_links:
                         if backlink_path not in visited:
-                            edges.append(LinkGraphEdge(
-                                source=backlink_path,
-                                target=current_path,
-                            ))
+                            edges.append(
+                                LinkGraphEdge(
+                                    source=backlink_path,
+                                    target=current_path,
+                                )
+                            )
                             queue.append((backlink_path, current_depth + 1))
 
             graph = LinkGraph(
@@ -247,11 +272,13 @@ def register_link_tools(server: FastMCP, client: VaultClient) -> None:
             return graph.model_dump_json(indent=2)
 
         except CacheNotInitializedError:
-            return json.dumps({
-                "error": True,
-                "type": "CacheNotInitializedError",
-                "message": "Vault cache not initialized. Call refresh_vault_structure first.",
-            })
+            return json.dumps(
+                {
+                    "error": True,
+                    "type": "CacheNotInitializedError",
+                    "message": "Vault cache not initialized. Call refresh_vault_structure first.",
+                }
+            )
 
 
 def _resolve_link_to_path(link: str) -> str | None:

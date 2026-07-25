@@ -45,12 +45,10 @@ def _make_mock_process(stdout: str = "", stderr: str = "", returncode: int = 0):
 def _skip_obsidian_running_check(monkeypatch):
     """Bypass the pre-flight check that requires a running Obsidian instance."""
     monkeypatch.setattr("obsidian_brain.cli_client._obsidian_running_until", 0.0)
-
-    async def no_op():
-        return None
-
-    with patch("obsidian_brain.cli_client._check_obsidian_running", new=no_op):
-        yield
+    monkeypatch.setattr(
+        "obsidian_brain.cli_client._check_obsidian_running",
+        AsyncMock(),
+    )
 
 
 @pytest.fixture
@@ -271,28 +269,6 @@ class TestRunMethod:
 
 
 # ---------------------------------------------------------------------------
-# _run_json method
-# ---------------------------------------------------------------------------
-
-
-class TestRunJsonMethod:
-    """Tests for the _run_json JSON parsing method."""
-
-    @pytest.fixture
-    def client(self):
-        return ObsidianCLIClient(cli_path="/usr/bin/obsidian")
-
-    @pytest.mark.asyncio
-    async def test_parses_json_output(self, client):
-        """Should parse JSON from stdout."""
-        data = {"key": "value"}
-        proc = _make_mock_process(stdout=json.dumps(data))
-        with patch("obsidian_brain.cli_client.asyncio.create_subprocess_exec", return_value=proc):
-            result = await client._run_json("tags")
-            assert result == data
-
-
-# ---------------------------------------------------------------------------
 # VaultClient method implementations
 # ---------------------------------------------------------------------------
 
@@ -333,7 +309,10 @@ class TestVaultClientMethods:
     @pytest.mark.asyncio
     async def test_note_exists_false(self, client):
         """Should return False when note doesn't exist."""
-        proc = _make_mock_process(stderr="not found", returncode=1)
+        proc = _make_mock_process(
+            stderr="Error: ENOENT: no such file or directory, open '/vault/missing.md'",
+            returncode=1,
+        )
         with patch("obsidian_brain.cli_client.asyncio.create_subprocess_exec", return_value=proc):
             assert await client.note_exists("missing.md") is False
 
@@ -459,45 +438,6 @@ class TestVaultClientMethods:
             call_args = mock_exec.call_args[0]
             assert "daily:append" in call_args
 
-    @pytest.mark.asyncio
-    async def test_get_tags(self, client):
-        """Should call obsidian tags format=json."""
-        tags = {"project": 5, "daily": 10}
-        proc = _make_mock_process(stdout=json.dumps(tags))
-        with patch(
-            "obsidian_brain.cli_client.asyncio.create_subprocess_exec", return_value=proc
-        ) as mock_exec:
-            result = await client.get_tags()
-            assert result["project"] == 5
-            call_args = mock_exec.call_args[0]
-            assert "tags" in call_args
-
-    @pytest.mark.asyncio
-    async def test_get_backlinks(self, client):
-        """Should call obsidian backlinks with file."""
-        links = ["other.md", "ref.md"]
-        proc = _make_mock_process(stdout=json.dumps(links))
-        with patch(
-            "obsidian_brain.cli_client.asyncio.create_subprocess_exec", return_value=proc
-        ) as mock_exec:
-            result = await client.get_backlinks("note.md")
-            assert len(result) == 2
-            call_args = mock_exec.call_args[0]
-            assert "backlinks" in call_args
-
-    @pytest.mark.asyncio
-    async def test_get_links(self, client):
-        """Should call obsidian links with file."""
-        links = ["linked1.md", "linked2.md"]
-        proc = _make_mock_process(stdout=json.dumps(links))
-        with patch(
-            "obsidian_brain.cli_client.asyncio.create_subprocess_exec", return_value=proc
-        ) as mock_exec:
-            result = await client.get_links("note.md")
-            assert len(result) == 2
-            call_args = mock_exec.call_args[0]
-            assert "links" in call_args
-
 
 # ---------------------------------------------------------------------------
 # Path Sanitization
@@ -590,18 +530,6 @@ class TestExecutableCLIContract:
                 "",
                 ["delete", "path=Projects/Nested/Note.md"],
             ),
-            (
-                "get_backlinks",
-                ("Projects/Nested/Note.md",),
-                "[]",
-                ["backlinks", "path=Projects/Nested/Note.md", "format=json"],
-            ),
-            (
-                "get_links",
-                ("Projects/Nested/Note.md",),
-                "[]",
-                ["links", "path=Projects/Nested/Note.md", "format=json"],
-            ),
         ],
     )
     async def test_nested_note_operations_pass_exact_paths(
@@ -690,14 +618,34 @@ class TestExecutableCLIContract:
         assert await client.note_exists("Missing.md") is False
 
     @pytest.mark.asyncio
-    async def test_note_exists_propagates_unrelated_cli_failures(self, fake_cli, monkeypatch):
+    async def test_vault_not_found_is_not_misclassified_as_a_missing_note(
+        self, fake_cli, monkeypatch
+    ):
         executable, _calls = fake_cli
         monkeypatch.setenv("FAKE_OBSIDIAN_EXIT", "1")
-        monkeypatch.setenv("FAKE_OBSIDIAN_STDERR", "Error: vault is locked")
+        monkeypatch.setenv("FAKE_OBSIDIAN_STDERR", "Vault not found: Work")
         client = ObsidianCLIClient(cli_path=executable)
 
         with pytest.raises(ObsidianCLIError) as exc_info:
+            await client.get_note("Note.md")
+        assert type(exc_info.value) is ObsidianCLIError
+
+        with pytest.raises(ObsidianCLIError) as exc_info:
             await client.note_exists("Note.md")
+        assert type(exc_info.value) is ObsidianCLIError
+
+    @pytest.mark.asyncio
+    async def test_enoent_for_a_different_file_is_not_a_missing_note(self, fake_cli, monkeypatch):
+        executable, _calls = fake_cli
+        monkeypatch.setenv("FAKE_OBSIDIAN_EXIT", "1")
+        monkeypatch.setenv(
+            "FAKE_OBSIDIAN_STDERR",
+            "Error: ENOENT: no such file or directory, open '/vault/other-note.md'",
+        )
+        client = ObsidianCLIClient(cli_path=executable)
+
+        with pytest.raises(ObsidianCLIError) as exc_info:
+            await client.get_note("note.md")
 
         assert type(exc_info.value) is ObsidianCLIError
 

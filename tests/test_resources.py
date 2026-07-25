@@ -158,7 +158,7 @@ async def test_invalidated_note_stays_indexed_and_reads_live_content(
     monkeypatch: pytest.MonkeyPatch,
 ):
     async with connected_resource_session(monkeypatch) as (session, client):
-        vault_cache.invalidate_path("Inbox.md")
+        vault_cache.invalidate_path("Inbox.md", exists=True)
 
         index_result = await session.read_resource(AnyUrl("vault://files"))
         index_content = index_result.contents[0]

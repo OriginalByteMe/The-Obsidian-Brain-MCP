@@ -28,7 +28,7 @@ src/
     server.py              # FastMCP server definition and tool registration
     protocol.py            # VaultClient Protocol (abstract interface)
     cli_client.py          # ObsidianCLIClient (CLI subprocess implementation)
-    parsers.py             # JSON/text output parsers for CLI responses
+    parsers.py             # Text-output parsers for CLI responses
     exceptions.py          # CLI-specific exception hierarchy
     models.py              # Pydantic models for data structures
     cache.py               # In-memory vault structure cache
@@ -83,12 +83,9 @@ class VaultClient(Protocol):
     async def update_note(self, path: str, content: str) -> None: ...
     async def append_to_note(self, path: str, content: str) -> None: ...
     async def delete_note(self, path: str) -> None: ...
-    async def search_simple(self, query: str, context_length: int = 100) -> list[dict[str, Any]]: ...
+    async def search_simple(self, query: str) -> list[dict[str, Any]]: ...
     async def get_daily_note(self, date: str | None = None) -> dict[str, Any]: ...
     async def append_daily(self, content: str, date: str | None = None) -> None: ...
-    async def get_tags(self) -> dict[str, int]: ...
-    async def get_backlinks(self, path: str) -> list[str]: ...
-    async def get_links(self, path: str) -> list[str]: ...
 ```
 
 ### CLI Command Mapping
@@ -106,9 +103,17 @@ class VaultClient(Protocol):
 | `search_simple` | `obsidian search:context query="{query}" format=text` |
 | `get_daily_note` | `obsidian daily:read [date="{date}"]` |
 | `append_daily` | `obsidian daily:append content="{content}" [date="{date}"]` |
-| `get_tags` | `obsidian tags format=json` |
-| `get_backlinks` | `obsidian backlinks path="{path}" format=json` |
-| `get_links` | `obsidian links path="{path}" format=json` |
+
+`search_simple` accepts only the query and always uses `search:context format=text`;
+the CLI exposes no context-length option. `ObsidianCLIClient` parses the text
+output directly and has no JSON execution helper or `parse_tags` /
+`parse_file_list` compatibility parsers.
+
+`get_note` returns `path`, parsed Markdown `content`, normalized `tags`,
+remaining `frontmatter`, `modified`, and `raw`. The `raw` value is the complete
+original document, including YAML frontmatter (and equals `content` when no
+frontmatter is present). Frontmatter is parsed by the installed
+`python-frontmatter` dependency rather than a hand-written YAML parser.
 
 ---
 

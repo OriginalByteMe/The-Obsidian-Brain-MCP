@@ -11,8 +11,9 @@ import json
 from typing import TYPE_CHECKING
 
 from ..cache import CacheNotInitializedError, vault_cache
-from ..exceptions import ObsidianCLIError
+from ..exceptions import NoteNotFoundError
 from ..onboarding import CONFIG_PATH, MEMORIES_PATH, onboarding_manager
+from .errors import OPERATIONAL_ERRORS, error_json
 
 if TYPE_CHECKING:
     from ..protocol import VaultClient
@@ -45,14 +46,8 @@ def register_onboarding_tools(server, client: VaultClient) -> None:
             status = onboarding_manager.check_onboarding_status(all_files)
             return json.dumps(status)
 
-        except ObsidianCLIError as e:
-            return json.dumps(
-                {
-                    "error": True,
-                    "type": "ObsidianCLIError",
-                    "message": str(e),
-                }
-            )
+        except OPERATIONAL_ERRORS as error:
+            return error_json(error)
 
     @server.tool()
     async def run_onboarding() -> str:
@@ -105,16 +100,22 @@ def register_onboarding_tools(server, client: VaultClient) -> None:
 
             # Create config.yml
             await client.create_note(CONFIG_PATH, config_content)
+            if vault_cache.is_initialized:
+                await vault_cache.sync_note(client, CONFIG_PATH)
             files_created.append(CONFIG_PATH)
 
             # Create vault-overview memory
             overview_path = f"{MEMORIES_PATH}/vault-overview.md"
             await client.create_note(overview_path, overview_memory)
+            if vault_cache.is_initialized:
+                await vault_cache.sync_note(client, overview_path)
             files_created.append(overview_path)
 
             # Create conventions memory
             conventions_path = f"{MEMORIES_PATH}/conventions.md"
             await client.create_note(conventions_path, conventions_memory)
+            if vault_cache.is_initialized:
+                await vault_cache.sync_note(client, conventions_path)
             files_created.append(conventions_path)
 
             return json.dumps(
@@ -139,14 +140,8 @@ def register_onboarding_tools(server, client: VaultClient) -> None:
                 }
             )
 
-        except ObsidianCLIError as e:
-            return json.dumps(
-                {
-                    "error": True,
-                    "type": "ObsidianCLIError",
-                    "message": str(e),
-                }
-            )
+        except OPERATIONAL_ERRORS as error:
+            return error_json(error)
 
     @server.tool()
     async def get_vault_config() -> str:
@@ -175,7 +170,7 @@ def register_onboarding_tools(server, client: VaultClient) -> None:
                 }
             )
 
-        except Exception:
+        except NoteNotFoundError:
             return json.dumps(
                 {
                     "exists": False,
@@ -183,3 +178,5 @@ def register_onboarding_tools(server, client: VaultClient) -> None:
                     "message": "Vault not onboarded. Run run_onboarding first.",
                 }
             )
+        except OPERATIONAL_ERRORS as error:
+            return error_json(error)

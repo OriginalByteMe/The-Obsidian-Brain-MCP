@@ -8,30 +8,9 @@ import json
 
 from mcp.server.fastmcp import FastMCP
 
-from ..exceptions import (
-    CLINotFoundError,
-    ObsidianCLIError,
-    ObsidianNotRunningError,
-)
 from ..models import SearchMatch
 from ..protocol import VaultClient
-
-
-_OPERATIONAL_ERRORS = (
-    CLINotFoundError,
-    ObsidianCLIError,
-    ObsidianNotRunningError,
-)
-
-
-def _error_json(error: Exception) -> str:
-    return json.dumps(
-        {
-            "error": True,
-            "type": type(error).__name__,
-            "message": str(error),
-        }
-    )
+from .errors import OPERATIONAL_ERRORS, error_json
 
 
 def register_search_tools(server: FastMCP, client: VaultClient) -> None:
@@ -77,5 +56,5 @@ def register_search_tools(server: FastMCP, client: VaultClient) -> None:
                     "total_matches": total_matches,
                 }
             )
-        except _OPERATIONAL_ERRORS as error:
-            return _error_json(error)
+        except OPERATIONAL_ERRORS as error:
+            return error_json(error)

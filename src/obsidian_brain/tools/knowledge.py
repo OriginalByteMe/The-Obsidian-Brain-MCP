@@ -10,8 +10,9 @@ import json
 from typing import TYPE_CHECKING
 
 from ..cache import CacheNotInitializedError, vault_cache
-from ..exceptions import NoteNotFoundError, ObsidianCLIError
+from ..exceptions import NoteNotFoundError
 from ..knowledge import KNOWLEDGE_BASE_PATH, knowledge_manager
+from .errors import OPERATIONAL_ERRORS, error_json
 
 if TYPE_CHECKING:
     from ..protocol import VaultClient
@@ -53,12 +54,14 @@ def register_knowledge_tools(server, client: VaultClient) -> None:
         try:
             structure = vault_cache.get_structure()
         except CacheNotInitializedError:
-            return json.dumps({
-                "error": True,
-                "type": "CacheNotInitializedError",
-                "message": "Vault cache not initialized. Call refresh_vault_structure first.",
-                "suggestion": "Run refresh_vault_structure before create_vault_knowledge_base",
-            })
+            return json.dumps(
+                {
+                    "error": True,
+                    "type": "CacheNotInitializedError",
+                    "message": "Vault cache not initialized. Call refresh_vault_structure first.",
+                    "suggestion": "Run refresh_vault_structure before create_vault_knowledge_base",
+                }
+            )
 
         # Generate the knowledge base content
         content = knowledge_manager.generate_content(
@@ -71,29 +74,29 @@ def register_knowledge_tools(server, client: VaultClient) -> None:
         try:
             # Create or update the knowledge base file
             await client.create_note(KNOWLEDGE_BASE_PATH, content)
+            if vault_cache.is_initialized:
+                await vault_cache.sync_note(client, KNOWLEDGE_BASE_PATH)
 
-            return json.dumps({
-                "success": True,
-                "path": KNOWLEDGE_BASE_PATH,
-                "message": f"Knowledge base created/updated at {KNOWLEDGE_BASE_PATH}",
-                "stats": {
-                    "total_notes": structure.stats.total_notes,
-                    "total_folders": structure.stats.total_folders,
-                    "total_tags": structure.stats.total_tags,
-                    "total_links": structure.stats.total_links,
-                    "orphan_notes": structure.stats.orphan_notes,
-                },
-                "sections_included": {
-                    "orphans": include_orphans,
-                    "link_patterns": include_link_patterns,
-                },
-            })
-        except ObsidianCLIError as e:
-            return json.dumps({
-                "error": True,
-                "type": "ObsidianCLIError",
-                "message": str(e),
-            })
+            return json.dumps(
+                {
+                    "success": True,
+                    "path": KNOWLEDGE_BASE_PATH,
+                    "message": f"Knowledge base created/updated at {KNOWLEDGE_BASE_PATH}",
+                    "stats": {
+                        "total_notes": structure.stats.total_notes,
+                        "total_folders": structure.stats.total_folders,
+                        "total_tags": structure.stats.total_tags,
+                        "total_links": structure.stats.total_links,
+                        "orphan_notes": structure.stats.orphan_notes,
+                    },
+                    "sections_included": {
+                        "orphans": include_orphans,
+                        "link_patterns": include_link_patterns,
+                    },
+                }
+            )
+        except OPERATIONAL_ERRORS as error:
+            return error_json(error)
 
     @server.tool()
     async def get_knowledge_base_status() -> str:
@@ -116,24 +119,24 @@ def register_knowledge_tools(server, client: VaultClient) -> None:
             frontmatter = data.get("frontmatter", {})
             vault_stats = frontmatter.get("vault_stats", {})
 
-            return json.dumps({
-                "exists": True,
-                "path": KNOWLEDGE_BASE_PATH,
-                "created": frontmatter.get("created"),
-                "updated": frontmatter.get("updated"),
-                "generator": frontmatter.get("generator"),
-                "vault_stats_at_generation": vault_stats,
-                "recommendation": "Knowledge base exists. Regenerate if vault has changed significantly.",
-            })
+            return json.dumps(
+                {
+                    "exists": True,
+                    "path": KNOWLEDGE_BASE_PATH,
+                    "created": frontmatter.get("created"),
+                    "updated": frontmatter.get("updated"),
+                    "generator": frontmatter.get("generator"),
+                    "vault_stats_at_generation": vault_stats,
+                    "recommendation": "Knowledge base exists. Regenerate if vault has changed significantly.",
+                }
+            )
         except NoteNotFoundError:
-            return json.dumps({
-                "exists": False,
-                "path": KNOWLEDGE_BASE_PATH,
-                "recommendation": "Knowledge base not found. Call create_vault_knowledge_base to generate it.",
-            })
-        except ObsidianCLIError as e:
-            return json.dumps({
-                "error": True,
-                "type": "ObsidianCLIError",
-                "message": str(e),
-            })
+            return json.dumps(
+                {
+                    "exists": False,
+                    "path": KNOWLEDGE_BASE_PATH,
+                    "recommendation": "Knowledge base not found. Call create_vault_knowledge_base to generate it.",
+                }
+            )
+        except OPERATIONAL_ERRORS as error:
+            return error_json(error)

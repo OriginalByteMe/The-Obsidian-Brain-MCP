@@ -11,9 +11,10 @@ import json
 from typing import TYPE_CHECKING
 
 from ..cache import vault_cache
-from ..exceptions import NoteNotFoundError, ObsidianCLIError
+from ..exceptions import NoteNotFoundError
 from ..memory import memory_manager
 from ..onboarding import MEMORIES_PATH
+from .errors import OPERATIONAL_ERRORS, error_json
 
 if TYPE_CHECKING:
     from ..protocol import VaultClient
@@ -48,29 +49,29 @@ def register_memory_tools(server, client: VaultClient) -> None:
                 try:
                     data = await client.get_note(mem_info["path"], include_metadata=True)
                     frontmatter = data.get("frontmatter", {})
-                    memories.append({
-                        "name": mem_info["name"],
-                        "path": mem_info["path"],
-                        "type": frontmatter.get("type"),
-                        "created": frontmatter.get("created"),
-                        "updated": frontmatter.get("updated"),
-                    })
+                    memories.append(
+                        {
+                            "name": mem_info["name"],
+                            "path": mem_info["path"],
+                            "type": frontmatter.get("type"),
+                            "created": frontmatter.get("created"),
+                            "updated": frontmatter.get("updated"),
+                        }
+                    )
                 except NoteNotFoundError:
                     # Skip if file was deleted between listing and reading
                     pass
 
-            return json.dumps({
-                "count": len(memories),
-                "memories": memories,
-                "memories_path": MEMORIES_PATH,
-            })
+            return json.dumps(
+                {
+                    "count": len(memories),
+                    "memories": memories,
+                    "memories_path": MEMORIES_PATH,
+                }
+            )
 
-        except ObsidianCLIError as e:
-            return json.dumps({
-                "error": True,
-                "type": "ObsidianCLIError",
-                "message": str(e),
-            })
+        except OPERATIONAL_ERRORS as error:
+            return error_json(error)
 
     @server.tool()
     async def read_memory(name: str) -> str:
@@ -99,30 +100,30 @@ def register_memory_tools(server, client: VaultClient) -> None:
                 name,
             )
 
-            return json.dumps({
-                "name": name,
-                "path": path,
-                "content": memory.content,
-                "type": memory.memory_type,
-                "created": memory.created,
-                "updated": memory.updated,
-                "frontmatter": frontmatter,
-            })
+            return json.dumps(
+                {
+                    "name": name,
+                    "path": path,
+                    "content": memory.content,
+                    "type": memory.memory_type,
+                    "created": memory.created,
+                    "updated": memory.updated,
+                    "frontmatter": frontmatter,
+                }
+            )
 
         except NoteNotFoundError:
-            return json.dumps({
-                "error": True,
-                "type": "MemoryNotFoundError",
-                "message": f"Memory '{name}' not found",
-                "path": path,
-                "suggestion": "Use list_memories to see available memories",
-            })
-        except ObsidianCLIError as e:
-            return json.dumps({
-                "error": True,
-                "type": "ObsidianCLIError",
-                "message": str(e),
-            })
+            return json.dumps(
+                {
+                    "error": True,
+                    "type": "MemoryNotFoundError",
+                    "message": f"Memory '{name}' not found",
+                    "path": path,
+                    "suggestion": "Use list_memories to see available memories",
+                }
+            )
+        except OPERATIONAL_ERRORS as error:
+            return error_json(error)
 
     @server.tool()
     async def write_memory(
@@ -154,11 +155,9 @@ def register_memory_tools(server, client: VaultClient) -> None:
             # Check if memory already exists
             try:
                 existing = await client.get_note(path, include_metadata=False)
-                existing_content = existing.get("content", "")
+                existing_content = existing.get("raw", existing.get("content", ""))
                 # Update existing memory
-                full_content = memory_manager.update_memory_content(
-                    existing_content, content
-                )
+                full_content = memory_manager.update_memory_content(existing_content, content)
                 action = "updated"
             except NoteNotFoundError:
                 # Create new memory
@@ -169,24 +168,21 @@ def register_memory_tools(server, client: VaultClient) -> None:
 
             await client.create_note(path, full_content)
 
-            # Invalidate cache for memories path after write
             if vault_cache.is_initialized:
-                vault_cache.invalidate_path(path)
+                await vault_cache.sync_note(client, path)
 
-            return json.dumps({
-                "success": True,
-                "action": action,
-                "name": name,
-                "path": path,
-                "message": f"Memory '{name}' {action} successfully",
-            })
+            return json.dumps(
+                {
+                    "success": True,
+                    "action": action,
+                    "name": name,
+                    "path": path,
+                    "message": f"Memory '{name}' {action} successfully",
+                }
+            )
 
-        except ObsidianCLIError as e:
-            return json.dumps({
-                "error": True,
-                "type": "ObsidianCLIError",
-                "message": str(e),
-            })
+        except OPERATIONAL_ERRORS as error:
+            return error_json(error)
 
     @server.tool()
     async def delete_memory(name: str) -> str:
@@ -206,30 +202,29 @@ def register_memory_tools(server, client: VaultClient) -> None:
         try:
             await client.delete_note(path)
 
-            # Invalidate cache after delete
             if vault_cache.is_initialized:
-                vault_cache.invalidate_path(path)
+                vault_cache.invalidate_path(path, exists=False)
 
-            return json.dumps({
-                "success": True,
-                "name": name,
-                "path": path,
-                "message": f"Memory '{name}' deleted successfully",
-            })
+            return json.dumps(
+                {
+                    "success": True,
+                    "name": name,
+                    "path": path,
+                    "message": f"Memory '{name}' deleted successfully",
+                }
+            )
 
         except NoteNotFoundError:
-            return json.dumps({
-                "error": True,
-                "type": "MemoryNotFoundError",
-                "message": f"Memory '{name}' not found",
-                "path": path,
-            })
-        except ObsidianCLIError as e:
-            return json.dumps({
-                "error": True,
-                "type": "ObsidianCLIError",
-                "message": str(e),
-            })
+            return json.dumps(
+                {
+                    "error": True,
+                    "type": "MemoryNotFoundError",
+                    "message": f"Memory '{name}' not found",
+                    "path": path,
+                }
+            )
+        except OPERATIONAL_ERRORS as error:
+            return error_json(error)
 
     @server.tool()
     async def edit_memory(
@@ -257,60 +252,65 @@ def register_memory_tools(server, client: VaultClient) -> None:
         try:
             data = await client.get_note(path, include_metadata=False)
             content = data.get("content", "")
+            raw_content = data.get("raw", content)
 
             if mode == "regex":
                 try:
                     pattern = re.compile(search, re.DOTALL | re.MULTILINE)
                     new_content, count = pattern.subn(replace, content)
                 except re.error as e:
-                    return json.dumps({
-                        "error": True,
-                        "type": "RegexError",
-                        "message": f"Invalid regex pattern: {e}",
-                    })
+                    return json.dumps(
+                        {
+                            "error": True,
+                            "type": "RegexError",
+                            "message": f"Invalid regex pattern: {e}",
+                        }
+                    )
             else:
                 count = content.count(search)
                 new_content = content.replace(search, replace)
 
             if count == 0:
-                return json.dumps({
-                    "success": False,
-                    "message": "Pattern not found in memory",
-                    "name": name,
-                })
+                return json.dumps(
+                    {
+                        "success": False,
+                        "message": "Pattern not found in memory",
+                        "name": name,
+                    }
+                )
 
             # Update the memory with new content
-            full_content = memory_manager.update_memory_content(content, new_content)
+            full_content = memory_manager.update_memory_content(raw_content, new_content)
             await client.create_note(path, full_content)
 
-            # Invalidate cache after edit
             if vault_cache.is_initialized:
-                vault_cache.invalidate_path(path)
+                await vault_cache.sync_note(client, path)
 
-            return json.dumps({
-                "success": True,
-                "name": name,
-                "path": path,
-                "replacements": count,
-                "message": f"Made {count} replacement(s) in memory '{name}'",
-            })
+            return json.dumps(
+                {
+                    "success": True,
+                    "name": name,
+                    "path": path,
+                    "replacements": count,
+                    "message": f"Made {count} replacement(s) in memory '{name}'",
+                }
+            )
 
         except NoteNotFoundError:
-            return json.dumps({
-                "error": True,
-                "type": "MemoryNotFoundError",
-                "message": f"Memory '{name}' not found",
-                "path": path,
-            })
-        except ObsidianCLIError as e:
-            return json.dumps({
-                "error": True,
-                "type": "ObsidianCLIError",
-                "message": str(e),
-            })
+            return json.dumps(
+                {
+                    "error": True,
+                    "type": "MemoryNotFoundError",
+                    "message": f"Memory '{name}' not found",
+                    "path": path,
+                }
+            )
+        except OPERATIONAL_ERRORS as error:
+            return error_json(error)
 
 
 def _format_frontmatter(frontmatter: dict) -> str:
     """Format frontmatter dict as YAML string."""
     import yaml
+
     return yaml.dump(frontmatter, default_flow_style=False, sort_keys=False)

@@ -10,35 +10,16 @@ import re
 from mcp.server.fastmcp import FastMCP
 
 from ..cache import vault_cache
-from ..exceptions import (
-    CLINotFoundError,
-    NoteNotFoundError,
-    ObsidianCLIError,
-    ObsidianNotRunningError,
-)
+from ..exceptions import NoteNotFoundError
 from ..models import FileEntry, NoteContent
 from ..protocol import VaultClient
 from ..utils.frontmatter import create_note_with_frontmatter
 from ..utils.wikilinks import extract_wikilinks, inject_wikilink
+from .errors import OPERATIONAL_ERRORS, error_json
 
 
-_OPERATIONAL_ERRORS = (
-    CLINotFoundError,
-    ObsidianCLIError,
-    ObsidianNotRunningError,
-)
 _FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
 _HEADING_RE = re.compile(r"^ {0,3}#{1,6}(?:[ \t]+|$)")
-
-
-def _error_json(error: Exception) -> str:
-    return json.dumps(
-        {
-            "error": True,
-            "type": type(error).__name__,
-            "message": str(error),
-        }
-    )
 
 
 def _find_heading(content: str, heading: str) -> int | None:
@@ -66,14 +47,6 @@ def _find_heading(content: str, heading: str) -> int | None:
     return None
 
 
-class InvalidBacklinkError(Exception):
-    """Raised when a backlink target doesn't exist."""
-
-    def __init__(self, target: str):
-        self.target = target
-        super().__init__(f"Backlink target does not exist: {target}")
-
-
 def register_vault_tools(server: FastMCP, client: VaultClient) -> None:
     """Register all vault-related tools with the MCP server."""
 
@@ -93,8 +66,8 @@ def register_vault_tools(server: FastMCP, client: VaultClient) -> None:
             entries = await client.list_directory(path)
             result = [FileEntry(name=e["name"], type=e["type"]).model_dump() for e in entries]
             return json.dumps(result, indent=2)
-        except _OPERATIONAL_ERRORS as error:
-            return _error_json(error)
+        except OPERATIONAL_ERRORS as error:
+            return error_json(error)
 
     @server.tool()
     async def get_note(path: str) -> str:
@@ -132,8 +105,8 @@ def register_vault_tools(server: FastMCP, client: VaultClient) -> None:
                     "message": f"Note not found: {path}",
                 }
             )
-        except _OPERATIONAL_ERRORS as error:
-            return _error_json(error)
+        except OPERATIONAL_ERRORS as error:
+            return error_json(error)
 
     @server.tool()
     async def create_note(
@@ -182,8 +155,8 @@ def register_vault_tools(server: FastMCP, client: VaultClient) -> None:
                             "message": f"Backlink target does not exist: {link}",
                         }
                     )
-        except _OPERATIONAL_ERRORS as error:
-            return _error_json(error)
+        except OPERATIONAL_ERRORS as error:
+            return error_json(error)
 
         # Extract title from path
         filename = path.split("/")[-1]
@@ -204,11 +177,10 @@ def register_vault_tools(server: FastMCP, client: VaultClient) -> None:
 
         try:
             await client.create_note(path, note_content)
-        except _OPERATIONAL_ERRORS as error:
-            return _error_json(error)
-
-        if vault_cache.is_initialized:
-            vault_cache.invalidate_path(path, exists=True)
+            if vault_cache.is_initialized:
+                await vault_cache.sync_note(client, path)
+        except OPERATIONAL_ERRORS as error:
+            return error_json(error)
 
         return json.dumps(
             {
@@ -238,7 +210,7 @@ def register_vault_tools(server: FastMCP, client: VaultClient) -> None:
             await client.get_note(path, include_metadata=False)
             await client.update_note(path, content)
             if vault_cache.is_initialized:
-                vault_cache.invalidate_path(path, exists=True)
+                await vault_cache.sync_note(client, path)
 
             return json.dumps(
                 {
@@ -255,8 +227,8 @@ def register_vault_tools(server: FastMCP, client: VaultClient) -> None:
                     "message": f"Note not found: {path}",
                 }
             )
-        except _OPERATIONAL_ERRORS as error:
-            return _error_json(error)
+        except OPERATIONAL_ERRORS as error:
+            return error_json(error)
 
     @server.tool()
     async def append_to_note(
@@ -281,7 +253,7 @@ def register_vault_tools(server: FastMCP, client: VaultClient) -> None:
             if heading:
                 # With heading: get current content, find/create heading, append under it
                 data = await client.get_note(path, include_metadata=False)
-                current = data.get("content", "")
+                current = data.get("raw", data.get("content", ""))
 
                 idx = _find_heading(current, heading)
                 if idx is not None:
@@ -294,7 +266,7 @@ def register_vault_tools(server: FastMCP, client: VaultClient) -> None:
                 # Simple append
                 await client.append_to_note(path, f"\n{content}")
             if vault_cache.is_initialized:
-                vault_cache.invalidate_path(path, exists=True)
+                await vault_cache.sync_note(client, path)
 
             return json.dumps(
                 {
@@ -312,8 +284,8 @@ def register_vault_tools(server: FastMCP, client: VaultClient) -> None:
                     "message": f"Note not found: {path}",
                 }
             )
-        except _OPERATIONAL_ERRORS as error:
-            return _error_json(error)
+        except OPERATIONAL_ERRORS as error:
+            return error_json(error)
 
     @server.tool()
     async def refresh_vault_structure() -> str:
@@ -339,8 +311,8 @@ def register_vault_tools(server: FastMCP, client: VaultClient) -> None:
                     "refreshed_at": structure.refreshed_at.isoformat(),
                 }
             )
-        except _OPERATIONAL_ERRORS as error:
-            return _error_json(error)
+        except OPERATIONAL_ERRORS as error:
+            return error_json(error)
 
     @server.tool()
     async def delete_note(path: str) -> str:
@@ -374,5 +346,5 @@ def register_vault_tools(server: FastMCP, client: VaultClient) -> None:
                     "message": f"Note not found: {path}",
                 }
             )
-        except _OPERATIONAL_ERRORS as error:
-            return _error_json(error)
+        except OPERATIONAL_ERRORS as error:
+            return error_json(error)
