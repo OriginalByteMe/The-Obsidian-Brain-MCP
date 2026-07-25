@@ -14,6 +14,7 @@ import pytest
 
 from obsidian_brain.cache import CacheNotInitializedError, VaultCache
 from obsidian_brain.exceptions import NoteNotFoundError
+from obsidian_brain.parsers import parse_note_read
 
 
 def _make_mock_client(
@@ -30,7 +31,7 @@ def _make_mock_client(
 
     client.get_all_files = AsyncMock(return_value=files)
 
-    async def _get_note(path: str, include_metadata: bool = True) -> dict[str, Any]:
+    async def _get_note(path: str) -> dict[str, Any]:
         if path in notes:
             return notes[path]
         return {"content": "", "tags": [], "frontmatter": {}, "modified": None}
@@ -108,7 +109,7 @@ async def test_refresh_indexes_all_files_but_fetches_only_markdown_metadata():
 
     assert cache.get_file_paths() == files
     assert [note.path for note in structure.notes] == ["note.md"]
-    client.get_note.assert_awaited_once_with("note.md", include_metadata=True)
+    client.get_note.assert_awaited_once_with("note.md")
 
 
 # --- Semaphore-bounded concurrency ---
@@ -134,7 +135,7 @@ async def test_concurrent_note_reads():
     current_concurrent = 0
     lock = asyncio.Lock()
 
-    async def tracking_get_note(path: str, include_metadata: bool = True):
+    async def tracking_get_note(path: str):
         nonlocal max_concurrent, current_concurrent
         async with lock:
             current_concurrent += 1
@@ -325,7 +326,7 @@ async def test_note_read_failure_skipped():
         },
     }
 
-    async def failing_get_note(path: str, include_metadata: bool = True):
+    async def failing_get_note(path: str):
         if path == "bad.md":
             raise RuntimeError("Simulated read failure")
         return notes.get(path, {"content": "", "tags": [], "frontmatter": {}, "modified": None})
@@ -338,6 +339,23 @@ async def test_note_read_failure_skipped():
 
     assert structure.stats.total_notes == 1
     assert structure.notes[0].path == "good.md"
+
+
+@pytest.mark.asyncio
+async def test_refresh_keeps_note_with_malformed_frontmatter():
+    raw = "---\ntags: [broken\n---\n# Readable\n"
+
+    async def read_note(path: str) -> dict[str, Any]:
+        return parse_note_read(raw, path)
+
+    client = _make_mock_client(["broken.md"])
+    client.get_note = AsyncMock(side_effect=read_note)
+
+    structure = await VaultCache().refresh(client)
+
+    assert [note.path for note in structure.notes] == ["broken.md"]
+    assert structure.notes[0].tags == []
+    assert structure.notes[0].frontmatter == {}
 
 
 # --- Incremental cache updates ---
@@ -370,13 +388,13 @@ async def test_invalidate_path_updates_membership_and_removes_note_everywhere():
     cache = VaultCache()
     await cache.refresh(_make_mock_client(files, notes))
     original_metadata = cache.get_note_metadata("a.md")
-    cache.invalidate_path("a.md", exists=True)
+    await cache.invalidate_path("a.md", exists=True)
     assert cache.get_note_metadata("a.md") is original_metadata
 
-    cache.invalidate_path("created.md", exists=True)
+    await cache.invalidate_path("created.md", exists=True)
     assert cache.get_file_paths() == ["a.md", "b.md", "created.md"]
 
-    cache.invalidate_path("a.md", exists=False)
+    await cache.invalidate_path("a.md", exists=False)
 
     assert cache.get_file_paths() == ["b.md", "created.md"]
     assert cache.get_note_metadata("a.md") is None
@@ -385,6 +403,43 @@ async def test_invalidate_path_updates_membership_and_removes_note_everywhere():
     assert cache.get_note_metadata("b.md").incoming_links == []
     assert cache.get_structure().stats.total_notes == 1
     assert cache.get_structure().stats.total_links == 0
+
+
+@pytest.mark.asyncio
+async def test_invalidate_path_serializes_with_refresh():
+    files = ["deleted.md", "kept.md"]
+    notes = {
+        "deleted.md": {"content": "# Deleted"},
+        "kept.md": {"content": "# Kept"},
+    }
+    cache = VaultCache()
+    await cache.refresh(_make_mock_client(files, notes))
+
+    refresh_started = asyncio.Event()
+    release_refresh = asyncio.Event()
+
+    async def delayed_listing(path: str) -> list[str]:
+        refresh_started.set()
+        await release_refresh.wait()
+        return files
+
+    client = _make_mock_client(files, notes)
+    client.get_all_files = AsyncMock(side_effect=delayed_listing)
+    refresh_task = asyncio.create_task(cache.refresh(client))
+    await refresh_started.wait()
+
+    delete_task = asyncio.create_task(cache.invalidate_path("deleted.md", exists=False))
+    add_task = asyncio.create_task(cache.invalidate_path(".obsidian/layout.json", exists=True))
+    await asyncio.sleep(0)
+
+    assert not delete_task.done()
+    assert not add_task.done()
+
+    release_refresh.set()
+    await asyncio.gather(refresh_task, delete_task, add_task)
+
+    assert cache.get_file_paths() == ["kept.md", ".obsidian/layout.json"]
+    assert cache.get_note_metadata("deleted.md") is None
 
 
 @pytest.mark.asyncio
@@ -423,7 +478,7 @@ async def test_sync_note_replaces_metadata_tags_and_link_indexes():
     assert cache.get_backlinks("c.md") == ["a.md"]
     assert cache.get_note_metadata("c.md").incoming_links == ["a.md"]
     assert cache.get_structure().stats.total_links == 1
-    client.get_note.assert_awaited_with("a.md", include_metadata=True)
+    client.get_note.assert_awaited_with("a.md")
 
 
 @pytest.mark.asyncio

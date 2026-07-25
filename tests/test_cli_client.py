@@ -588,6 +588,8 @@ class TestExecutableCLIContract:
             "/outside.md",
             "../outside.md",
             "folder/../../outside.md",
+            "folder//note.md",
+            "folder/./note.md",
             r"..\outside.md",
             "C:/outside.md",
         ],

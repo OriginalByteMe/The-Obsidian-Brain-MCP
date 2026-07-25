@@ -88,7 +88,7 @@ def _validate_path(path: str, *, allow_root: bool = False) -> None:
     if (
         not path
         or parsed.is_absolute()
-        or ".." in parsed.parts
+        or any(part in {"", ".", ".."} for part in path.split("/"))
         or "\\" in path
         or re.match(r"^[A-Za-z]:", path)
     ):
@@ -235,6 +235,13 @@ class ObsidianCLIClient:
     # -------------------------------------------------------------------------
     # Directory Operations
     # -------------------------------------------------------------------------
+    async def _get_file_lines(self, path: str) -> list[str]:
+        _validate_path(path, allow_root=True)
+        args = ["files"]
+        if path and path != "/":
+            args.append(f"folder={path}")
+        output = await self._run(*args)
+        return [line.strip() for line in output.strip().splitlines() if line.strip()]
 
     async def list_directory(self, path: str = "/") -> list[dict[str, Any]]:
         """List files and folders at the specified path.
@@ -243,16 +250,9 @@ class ObsidianCLIClient:
         (one entry per line), not JSON.  We use ``_run`` and parse
         the text output directly.
         """
-        _validate_path(path, allow_root=True)
-        args = ["files"]
-        if path and path != "/":
-            args.append(f"folder={path}")
-        output = await self._run(*args)
+        lines = await self._get_file_lines(path)
         result = []
-        for line in output.strip().splitlines():
-            entry = line.strip()
-            if not entry:
-                continue
+        for entry in lines:
             is_folder = entry.endswith("/")
             result.append(
                 {
@@ -269,18 +269,13 @@ class ObsidianCLIClient:
         then lists Markdown notes and every attachment type. Its output is
         plain text with one path per line, so this uses ``_run`` directly.
         """
-        _validate_path(path, allow_root=True)
-        args = ["files"]
-        if path and path != "/":
-            args.append(f"folder={path}")
-        output = await self._run(*args)
-        return [line.strip() for line in output.strip().splitlines() if line.strip()]
+        return await self._get_file_lines(path)
 
     # -------------------------------------------------------------------------
     # Note Operations
     # -------------------------------------------------------------------------
 
-    async def get_note(self, path: str, include_metadata: bool = True) -> dict[str, Any]:
+    async def get_note(self, path: str) -> dict[str, Any]:
         """Get a note's content and metadata.
 
         Note: The Obsidian CLI ``read`` command returns raw markdown text,
@@ -296,7 +291,7 @@ class ObsidianCLIClient:
         """Check if a note exists in the vault."""
         _validate_path(path)
         try:
-            await self.get_note(path, include_metadata=False)
+            await self.get_note(path)
             return True
         except NoteNotFoundError:
             return False

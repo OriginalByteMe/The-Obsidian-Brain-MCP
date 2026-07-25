@@ -127,8 +127,13 @@ class VaultCache:
                 tag_counts[tag] = tag_counts.get(tag, 0) + 1
         return tag_counts
 
-    def invalidate_path(self, path: str, *, exists: bool) -> None:
+    async def invalidate_path(self, path: str, *, exists: bool) -> None:
         """Update membership, dropping cached note data only after deletion."""
+        async with self._lock:
+            self._invalidate_path_unlocked(path, exists=exists)
+
+    def _invalidate_path_unlocked(self, path: str, *, exists: bool) -> None:
+        """Mutate path membership while the caller holds ``_lock``."""
         if self._structure is None:
             return
 
@@ -143,17 +148,17 @@ class VaultCache:
 
     async def sync_note(self, client: "VaultClient", path: str) -> None:
         """Refresh one cached note after a successful vault write."""
-        if self._structure is None:
-            return
-        if not path.lower().endswith(".md"):
-            self.invalidate_path(path, exists=True)
-            return
-
         async with self._lock:
+            if self._structure is None:
+                return
+            if not path.lower().endswith(".md"):
+                self._invalidate_path_unlocked(path, exists=True)
+                return
+
             try:
-                note_data = await client.get_note(path, include_metadata=True)
+                note_data = await client.get_note(path)
             except NoteNotFoundError:
-                self.invalidate_path(path, exists=False)
+                self._invalidate_path_unlocked(path, exists=False)
                 return
 
             note = self._make_note_metadata(path, note_data)
@@ -224,7 +229,7 @@ class VaultCache:
         async def fetch_one(file_path: str) -> NoteMetadata | None:
             async with semaphore:
                 try:
-                    note_data = await client.get_note(file_path, include_metadata=True)
+                    note_data = await client.get_note(file_path)
                     return self._make_note_metadata(file_path, note_data)
                 except Exception:
                     return None

@@ -32,7 +32,7 @@ class MockVaultClient:
     async def get_all_files(self, path: str = "/") -> list[str]:
         return list(self._files)
 
-    async def get_note(self, path: str, include_metadata: bool = True) -> dict[str, Any]:
+    async def get_note(self, path: str) -> dict[str, Any]:
         if path in self._notes:
             return self._notes[path]
         raise NoteNotFoundError(path)

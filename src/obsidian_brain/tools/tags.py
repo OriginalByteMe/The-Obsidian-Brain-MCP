@@ -47,7 +47,7 @@ def register_tag_tools(server: FastMCP, client: VaultClient) -> None:
 
         try:
             # Get current content
-            data = await client.get_note(path, include_metadata=True)
+            data = await client.get_note(path)
             content = data.get("raw", data.get("content", ""))
             current_tags = data.get("tags", [])
 
@@ -56,8 +56,7 @@ def register_tag_tools(server: FastMCP, client: VaultClient) -> None:
 
             # Update the note
             await client.update_note(path, new_content)
-            if vault_cache.is_initialized:
-                await vault_cache.sync_note(client, path)
+            await vault_cache.sync_note(client, path)
 
             # Get updated tag list
             updated_tags = sorted(set(current_tags + normalized_tags))
@@ -110,7 +109,7 @@ def register_tag_tools(server: FastMCP, client: VaultClient) -> None:
 
         try:
             # Get current content
-            data = await client.get_note(path, include_metadata=True)
+            data = await client.get_note(path)
             content = data.get("raw", data.get("content", ""))
             current_tags = data.get("tags", [])
 
@@ -119,8 +118,7 @@ def register_tag_tools(server: FastMCP, client: VaultClient) -> None:
 
             # Update the note
             await client.update_note(path, new_content)
-            if vault_cache.is_initialized:
-                await vault_cache.sync_note(client, path)
+            await vault_cache.sync_note(client, path)
 
             # Calculate remaining tags
             remaining_tags = [

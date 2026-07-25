@@ -52,12 +52,11 @@ class VaultClient(Protocol):
         """
         ...
 
-    async def get_note(self, path: str, include_metadata: bool = True) -> dict[str, Any]:
+    async def get_note(self, path: str) -> dict[str, Any]:
         """Get a note's content and metadata.
 
         Args:
             path: Path to the note (e.g., "Projects/MyProject.md").
-            include_metadata: If True, include tags/frontmatter/modified.
 
         Returns:
             Dict with path, content, raw, tags, frontmatter, and modified.

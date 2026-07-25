@@ -4,12 +4,16 @@ import re
 from typing import Any
 
 import frontmatter
+from yaml import YAMLError
 
 
 def _parse_markdown(text: str) -> dict[str, Any]:
     """Split raw Markdown into content, normalized tags, and frontmatter."""
     stripped = text.lstrip("\n")
-    post = frontmatter.loads(stripped)
+    try:
+        post = frontmatter.loads(stripped)
+    except YAMLError:
+        return {"content": text, "tags": [], "frontmatter": {}}
     metadata = post.metadata
     if post.handler is None:
         content = text
@@ -44,7 +48,7 @@ def parse_search_results(data: str) -> list[dict[str, Any]]:
     """Group grep-style ``path:line: text`` search output by file."""
     matches_by_path: dict[str, list[str]] = {}
     for line in data.splitlines():
-        match = re.match(r"^(.+?):\d+: ?(.*)$", line)
+        match = re.match(r"^(.+?\.md):\d+: ?(.*)$", line, flags=re.IGNORECASE)
         if match:
             matches_by_path.setdefault(match.group(1), []).append(match.group(2))
 

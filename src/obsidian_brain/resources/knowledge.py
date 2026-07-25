@@ -41,7 +41,7 @@ def register_knowledge_resource(server, client: VaultClient) -> None:
             Markdown content of the knowledge base, or instructions if not found
         """
         try:
-            data = await client.get_note(KNOWLEDGE_BASE_PATH, include_metadata=False)
+            data = await client.get_note(KNOWLEDGE_BASE_PATH)
             return data.get("content", "")
         except NoteNotFoundError:
             return f"""# Knowledge Base Not Found

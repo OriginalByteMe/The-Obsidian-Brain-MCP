@@ -100,22 +100,19 @@ def register_onboarding_tools(server, client: VaultClient) -> None:
 
             # Create config.yml
             await client.create_note(CONFIG_PATH, config_content)
-            if vault_cache.is_initialized:
-                await vault_cache.sync_note(client, CONFIG_PATH)
+            await vault_cache.sync_note(client, CONFIG_PATH)
             files_created.append(CONFIG_PATH)
 
             # Create vault-overview memory
             overview_path = f"{MEMORIES_PATH}/vault-overview.md"
             await client.create_note(overview_path, overview_memory)
-            if vault_cache.is_initialized:
-                await vault_cache.sync_note(client, overview_path)
+            await vault_cache.sync_note(client, overview_path)
             files_created.append(overview_path)
 
             # Create conventions memory
             conventions_path = f"{MEMORIES_PATH}/conventions.md"
             await client.create_note(conventions_path, conventions_memory)
-            if vault_cache.is_initialized:
-                await vault_cache.sync_note(client, conventions_path)
+            await vault_cache.sync_note(client, conventions_path)
             files_created.append(conventions_path)
 
             return json.dumps(
@@ -159,7 +156,7 @@ def register_onboarding_tools(server, client: VaultClient) -> None:
             JSON with config content or error if not onboarded
         """
         try:
-            data = await client.get_note(CONFIG_PATH, include_metadata=False)
+            data = await client.get_note(CONFIG_PATH)
             content = data.get("content", "")
 
             return json.dumps(

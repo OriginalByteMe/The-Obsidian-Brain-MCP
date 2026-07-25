@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import json
-from pathlib import PurePosixPath, PureWindowsPath
+from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
 from urllib.parse import quote, unquote
 
 from ..cache import CacheNotInitializedError, vault_cache
+from ..cli_client import _validate_path
 
 if TYPE_CHECKING:
     from ..protocol import VaultClient
@@ -16,17 +17,10 @@ _REFRESH_HINT = "Call refresh_vault_structure to initialize or update this cache
 
 
 def _decode_note_path(value: str) -> str:
-    """Decode one URI-template value and reject paths outside the vault."""
+    """Decode and validate one vault-relative Markdown URI-template value."""
     path = unquote(value, errors="strict")
-    parts = path.split("/")
-    if (
-        not path.lower().endswith(".md")
-        or "\0" in path
-        or "\\" in path
-        or PurePosixPath(path).is_absolute()
-        or PureWindowsPath(path).drive
-        or any(part in {"", ".", ".."} for part in parts)
-    ):
+    _validate_path(path)
+    if not path.lower().endswith(".md"):
         raise ValueError("Invalid vault note path")
     return path
 
@@ -76,5 +70,5 @@ def register_note_resources(server, client: VaultClient) -> None:
     async def vault_note(path: str) -> str:
         """Read current Markdown content for a validated vault-relative path."""
         note_path = _decode_note_path(path)
-        note = await client.get_note(note_path, include_metadata=False)
+        note = await client.get_note(note_path)
         return note.get("content", "")

@@ -35,6 +35,18 @@ class TestParseNoteRead:
 
         assert result["tags"] == ["project", "active"]
 
+    def test_malformed_frontmatter_falls_back_to_raw_content(self):
+        raw = "---\ntags: [broken\n---\n# Readable\n"
+
+        assert parse_note_read(raw, path="Broken.md") == {
+            "path": "Broken.md",
+            "raw": raw,
+            "content": raw,
+            "tags": [],
+            "frontmatter": {},
+            "modified": None,
+        }
+
     def test_without_frontmatter_keeps_the_return_shape(self):
         result = parse_note_read("# Plain note", path="Plain.md")
 
@@ -69,6 +81,24 @@ class TestParseSearchResults:
             },
         ]
 
+    def test_keeps_colons_in_paths(self):
+        assert parse_search_results("Notes/release:2026.md:7: hit") == [
+            {
+                "path": "Notes/release:2026.md",
+                "matches": ["hit"],
+                "score": 0.0,
+            }
+        ]
+
+    def test_keeps_colons_in_paths_and_match_text(self):
+        assert parse_search_results("Notes/release:2026:plan.md:7: status:2027: ready") == [
+            {
+                "path": "Notes/release:2026:plan.md",
+                "matches": ["status:2027: ready"],
+                "score": 0.0,
+            }
+        ]
+
     def test_ignores_non_grep_text_including_legacy_json(self):
         assert parse_search_results("") == []
         assert parse_search_results('[{"path": "Legacy.md"}]') == []
@@ -90,6 +120,15 @@ class TestParseDaily:
         result = parse_daily("---\ntags: daily, journal\n---\n# Today")
 
         assert result["tags"] == ["daily", "journal"]
+
+    def test_malformed_frontmatter_falls_back_to_raw_content(self):
+        raw = "---\ntags: [broken\n---\n# Today\n"
+
+        assert parse_daily(raw) == {
+            "content": raw,
+            "tags": [],
+            "frontmatter": {},
+        }
 
     def test_without_frontmatter_keeps_the_return_shape(self):
         assert parse_daily("# Today") == {

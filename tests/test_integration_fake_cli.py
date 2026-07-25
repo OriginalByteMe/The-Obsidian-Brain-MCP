@@ -6,6 +6,7 @@ import json
 import sys
 from pathlib import Path
 from textwrap import dedent
+from unittest.mock import AsyncMock
 from typing import Any
 from urllib.parse import quote
 
@@ -158,10 +159,7 @@ async def test_real_server_against_fake_cli(tmp_path: Path, monkeypatch: pytest.
     from obsidian_brain.cache import vault_cache
     from obsidian_brain.server import client, mcp
 
-    async def skip_running_app_preflight() -> None:
-        return None
-
-    monkeypatch.setattr(cli_module, "_check_obsidian_running", skip_running_app_preflight)
+    monkeypatch.setattr(cli_module, "_check_obsidian_running", AsyncMock())
     monkeypatch.setattr(client, "cli_path", None)
     monkeypatch.setattr(client, "vault", str(vault))
     monkeypatch.setattr(vault_cache, "_structure", None)

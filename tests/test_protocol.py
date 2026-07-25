@@ -47,7 +47,7 @@ class TestVaultClientProtocol:
 
             async def get_all_files(self, path="/"): ...
 
-            async def get_note(self, path="", include_metadata=True): ...
+            async def get_note(self, path=""): ...
 
             async def note_exists(self, path=""): ...
 
@@ -77,11 +77,9 @@ class TestVaultClientProtocol:
 
     def test_method_signatures(self):
         """Check key method signatures match expected types."""
-        # get_note should have path and include_metadata params
+        # get_note takes only the note path
         sig = inspect.signature(VaultClient.get_note)
-        params = list(sig.parameters.keys())
-        assert "self" in params
-        assert "path" in params
+        assert list(sig.parameters) == ["self", "path"]
 
         # search_simple takes only the query; the CLI ignores any context length
         sig = inspect.signature(VaultClient.search_simple)

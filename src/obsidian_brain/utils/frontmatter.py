@@ -6,8 +6,17 @@ using the python-frontmatter library.
 """
 
 from datetime import datetime
+from typing import Any
 
 import frontmatter
+
+
+def _normalize_tags(tags: Any) -> list[str]:
+    if isinstance(tags, str):
+        return [tag.strip() for tag in tags.split(",")]
+    if isinstance(tags, list):
+        return tags
+    return []
 
 
 def add_frontmatter_tags(content: str, new_tags: list[str]) -> str:
@@ -26,11 +35,7 @@ def add_frontmatter_tags(content: str, new_tags: list[str]) -> str:
         '---\\ntags:\\n- a\\n- b\\n- c\\n---\\nBody'
     """
     post = frontmatter.loads(content)
-    existing = post.get("tags", [])
-
-    # Handle case where tags is a single string
-    if isinstance(existing, str):
-        existing = [existing]
+    existing = _normalize_tags(post.get("tags", []))
 
     # Merge and dedupe, preserving order
     combined = list(existing)
@@ -58,11 +63,7 @@ def remove_frontmatter_tags(content: str, tags_to_remove: list[str]) -> str:
         '---\\ntags:\\n- a\\n- c\\n---\\nBody'
     """
     post = frontmatter.loads(content)
-    existing = post.get("tags", [])
-
-    # Handle case where tags is a single string
-    if isinstance(existing, str):
-        existing = [existing]
+    existing = _normalize_tags(post.get("tags", []))
 
     # Remove specified tags (case-insensitive)
     tags_lower = [t.lower() for t in tags_to_remove]

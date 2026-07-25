@@ -206,14 +206,13 @@ class TestVaultTools:
             assert sync_client is client
             synced.append(path)
 
-        def record_invalidation(path: str, *, exists: bool) -> None:
+        async def record_invalidation(path: str, *, exists: bool) -> None:
             invalidated.append((path, exists))
 
         monkeypatch.setattr(
             vault_tools,
             "vault_cache",
             SimpleNamespace(
-                is_initialized=True,
                 sync_note=record_sync,
                 invalidate_path=record_invalidation,
             ),
@@ -244,7 +243,7 @@ class TestVaultTools:
         }
         client.get_all_files.return_value = list(state)
 
-        async def get_note(path: str, include_metadata: bool = True) -> dict[str, Any]:
+        async def get_note(path: str) -> dict[str, Any]:
             return state[path]
 
         async def update_note(path: str, content: str) -> None:

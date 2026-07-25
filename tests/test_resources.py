@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
-from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 
 import pytest
@@ -28,15 +28,14 @@ class FakeNoteClient:
         }
         self.read_paths: list[str] = []
 
-    async def get_note(self, path: str, include_metadata: bool = True) -> dict[str, object]:
-        _ = include_metadata
+    async def get_note(self, path: str) -> dict[str, object]:
         self.read_paths.append(path)
         if path not in self.notes:
             raise NoteNotFoundError(path)
         return {"path": path, "content": self.notes[path]}
 
 
-@asynccontextmanager
+@pytest.fixture
 async def connected_resource_session(monkeypatch: pytest.MonkeyPatch):
     from obsidian_brain.server import client, mcp
 
@@ -63,8 +62,26 @@ async def connected_resource_session(monkeypatch: pytest.MonkeyPatch):
     )
     monkeypatch.setattr(client, "get_note", fake_client.get_note)
 
-    async with create_connected_server_and_client_session(mcp) as session:
-        yield session, fake_client
+    ready = asyncio.get_running_loop().create_future()
+    stop = asyncio.Event()
+
+    async def connect() -> None:
+        try:
+            async with create_connected_server_and_client_session(mcp) as session:
+                ready.set_result(session)
+                await stop.wait()
+        except BaseException as error:
+            if not ready.done():
+                ready.set_exception(error)
+            else:
+                raise
+
+    task = asyncio.create_task(connect())
+    try:
+        yield await ready, fake_client
+    finally:
+        stop.set()
+        await task
 
 
 @pytest.mark.asyncio
@@ -85,104 +102,100 @@ async def test_note_index_requests_refresh_when_cache_is_uninitialized(
 
 @pytest.mark.asyncio
 async def test_lists_note_index_and_read_template_over_protocol(
-    monkeypatch: pytest.MonkeyPatch,
+    connected_resource_session,
 ):
-    async with connected_resource_session(monkeypatch) as (session, _client):
-        resources = (await session.list_resources()).resources
-        files_resource = next(item for item in resources if str(item.uri) == "vault://files")
-        assert files_resource.mimeType == "application/json"
-        assert "refresh_vault_structure" in (files_resource.description or "")
+    (session, _client) = connected_resource_session
+    resources = (await session.list_resources()).resources
+    files_resource = next(item for item in resources if str(item.uri) == "vault://files")
+    assert files_resource.mimeType == "application/json"
+    assert "refresh_vault_structure" in (files_resource.description or "")
 
-        templates = (await session.list_resource_templates()).resourceTemplates
-        note_template = next(
-            item for item in templates if item.uriTemplate == "vault://note/{path}"
-        )
-        assert note_template.mimeType == "text/markdown"
+    templates = (await session.list_resource_templates()).resourceTemplates
+    note_template = next(item for item in templates if item.uriTemplate == "vault://note/{path}")
+    assert note_template.mimeType == "text/markdown"
 
 
 @pytest.mark.asyncio
 async def test_reads_cached_index_and_nested_note_over_protocol(
-    monkeypatch: pytest.MonkeyPatch,
+    connected_resource_session,
 ):
-    async with connected_resource_session(monkeypatch) as (session, client):
-        index_result = await session.read_resource(AnyUrl("vault://files"))
-        index_content = index_result.contents[0]
-        assert isinstance(index_content, TextResourceContents)
-        index = json.loads(index_content.text)
-        assert index == {
-            "files": [
-                {
-                    "path": "Assets/cover.PNG",
-                    "extension": ".png",
-                    "readable": False,
-                },
-                {
-                    "path": "Boards/plan.canvas",
-                    "extension": ".canvas",
-                    "readable": False,
-                },
-                {
-                    "path": "Inbox.md",
-                    "extension": ".md",
-                    "readable": True,
-                    "uri": "vault://note/Inbox.md",
-                },
-                {
-                    "path": "Projects/Nested Plan.md",
-                    "extension": ".md",
-                    "readable": True,
-                    "uri": "vault://note/Projects%2FNested%20Plan.md",
-                },
-                {
-                    "path": "config.yml",
-                    "extension": ".yml",
-                    "readable": False,
-                },
-            ],
-            "refreshed_at": "2026-01-02T03:04:05+00:00",
-            "refresh": "Call refresh_vault_structure to initialize or update this cached index.",
-        }
+    (session, client) = connected_resource_session
+    index_result = await session.read_resource(AnyUrl("vault://files"))
+    index_content = index_result.contents[0]
+    assert isinstance(index_content, TextResourceContents)
+    index = json.loads(index_content.text)
+    assert index == {
+        "files": [
+            {
+                "path": "Assets/cover.PNG",
+                "extension": ".png",
+                "readable": False,
+            },
+            {
+                "path": "Boards/plan.canvas",
+                "extension": ".canvas",
+                "readable": False,
+            },
+            {
+                "path": "Inbox.md",
+                "extension": ".md",
+                "readable": True,
+                "uri": "vault://note/Inbox.md",
+            },
+            {
+                "path": "Projects/Nested Plan.md",
+                "extension": ".md",
+                "readable": True,
+                "uri": "vault://note/Projects%2FNested%20Plan.md",
+            },
+            {
+                "path": "config.yml",
+                "extension": ".yml",
+                "readable": False,
+            },
+        ],
+        "refreshed_at": "2026-01-02T03:04:05+00:00",
+        "refresh": "Call refresh_vault_structure to initialize or update this cached index.",
+    }
 
-        note_result = await session.read_resource(
-            AnyUrl("vault://note/Projects%2FNested%20Plan.md")
-        )
-        note_content = note_result.contents[0]
-        assert isinstance(note_content, TextResourceContents)
-        assert note_content.text == "# Nested Plan\n\nShip it.\n"
-        assert note_content.mimeType == "text/markdown"
-        assert client.read_paths == ["Projects/Nested Plan.md"]
+    note_result = await session.read_resource(AnyUrl("vault://note/Projects%2FNested%20Plan.md"))
+    note_content = note_result.contents[0]
+    assert isinstance(note_content, TextResourceContents)
+    assert note_content.text == "# Nested Plan\n\nShip it.\n"
+    assert note_content.mimeType == "text/markdown"
+    assert client.read_paths == ["Projects/Nested Plan.md"]
 
 
 @pytest.mark.asyncio
 async def test_invalidated_note_stays_indexed_and_reads_live_content(
-    monkeypatch: pytest.MonkeyPatch,
+    connected_resource_session,
 ):
-    async with connected_resource_session(monkeypatch) as (session, client):
-        vault_cache.invalidate_path("Inbox.md", exists=True)
+    (session, client) = connected_resource_session
+    await vault_cache.invalidate_path("Inbox.md", exists=True)
 
-        index_result = await session.read_resource(AnyUrl("vault://files"))
-        index_content = index_result.contents[0]
-        assert isinstance(index_content, TextResourceContents)
-        paths = [entry["path"] for entry in json.loads(index_content.text)["files"]]
-        assert "Inbox.md" in paths
+    index_result = await session.read_resource(AnyUrl("vault://files"))
+    index_content = index_result.contents[0]
+    assert isinstance(index_content, TextResourceContents)
+    paths = [entry["path"] for entry in json.loads(index_content.text)["files"]]
+    assert "Inbox.md" in paths
 
-        note_result = await session.read_resource(AnyUrl("vault://note/Inbox.md"))
-        note_content = note_result.contents[0]
-        assert isinstance(note_content, TextResourceContents)
-        assert note_content.text == "# Inbox\n"
-        assert client.read_paths == ["Inbox.md"]
+    note_result = await session.read_resource(AnyUrl("vault://note/Inbox.md"))
+    note_content = note_result.contents[0]
+    assert isinstance(note_content, TextResourceContents)
+    assert note_content.text == "# Inbox\n"
+    assert client.read_paths == ["Inbox.md"]
 
 
 @pytest.mark.asyncio
 async def test_reads_valid_markdown_path_without_cached_metadata(
-    monkeypatch: pytest.MonkeyPatch,
+    connected_resource_session,
 ):
-    async with connected_resource_session(monkeypatch) as (session, client):
-        result = await session.read_resource(AnyUrl("vault://note/Hidden.md"))
-        content = result.contents[0]
-        assert isinstance(content, TextResourceContents)
-        assert content.text == "# Not in the cache\n"
-        assert client.read_paths == ["Hidden.md"]
+    (session, client) = connected_resource_session
+    result = await session.read_resource(AnyUrl("vault://note/Hidden.md"))
+    content = result.contents[0]
+    assert isinstance(content, TextResourceContents)
+    assert content.text == "# Not in the cache\n"
+    assert client.read_paths == ["Hidden.md"]
 
 
 @pytest.mark.asyncio
@@ -194,20 +207,20 @@ async def test_reads_valid_markdown_path_without_cached_metadata(
     ],
 )
 async def test_rejects_unsafe_or_non_markdown_note_resources(
-    monkeypatch: pytest.MonkeyPatch,
+    connected_resource_session,
     uri: str,
 ):
-    async with connected_resource_session(monkeypatch) as (session, client):
-        with pytest.raises(McpError):
-            _ = await session.read_resource(AnyUrl(uri))
-        assert client.read_paths == []
+    (session, client) = connected_resource_session
+    with pytest.raises(McpError):
+        _ = await session.read_resource(AnyUrl(uri))
+    assert client.read_paths == []
 
 
 @pytest.mark.asyncio
 async def test_missing_note_error_comes_from_live_client(
-    monkeypatch: pytest.MonkeyPatch,
+    connected_resource_session,
 ):
-    async with connected_resource_session(monkeypatch) as (session, client):
-        with pytest.raises(McpError):
-            _ = await session.read_resource(AnyUrl("vault://note/Missing.md"))
-        assert client.read_paths == ["Missing.md"]
+    (session, client) = connected_resource_session
+    with pytest.raises(McpError):
+        _ = await session.read_resource(AnyUrl("vault://note/Missing.md"))
+    assert client.read_paths == ["Missing.md"]

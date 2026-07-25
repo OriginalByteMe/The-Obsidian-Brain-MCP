@@ -169,7 +169,6 @@ def _create_mock_client():
 def _create_mock_vault_cache():
     """Create a mock vault cache with canned data."""
     mock_cache = MagicMock()
-    mock_cache.is_initialized = True
 
     mock_structure = MagicMock()
     mock_structure.stats.total_notes = 10

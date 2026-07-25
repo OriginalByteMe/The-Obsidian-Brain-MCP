@@ -47,7 +47,7 @@ def register_memory_tools(server, client: VaultClient) -> None:
             memories = []
             for mem_info in memory_files:
                 try:
-                    data = await client.get_note(mem_info["path"], include_metadata=True)
+                    data = await client.get_note(mem_info["path"])
                     frontmatter = data.get("frontmatter", {})
                     memories.append(
                         {
@@ -90,7 +90,7 @@ def register_memory_tools(server, client: VaultClient) -> None:
         path = memory_manager.get_memory_path(name)
 
         try:
-            data = await client.get_note(path, include_metadata=True)
+            data = await client.get_note(path)
             content = data.get("content", "")
             frontmatter = data.get("frontmatter", {})
 
@@ -154,7 +154,7 @@ def register_memory_tools(server, client: VaultClient) -> None:
         try:
             # Check if memory already exists
             try:
-                existing = await client.get_note(path, include_metadata=False)
+                existing = await client.get_note(path)
                 existing_content = existing.get("raw", existing.get("content", ""))
                 # Update existing memory
                 full_content = memory_manager.update_memory_content(existing_content, content)
@@ -168,8 +168,7 @@ def register_memory_tools(server, client: VaultClient) -> None:
 
             await client.create_note(path, full_content)
 
-            if vault_cache.is_initialized:
-                await vault_cache.sync_note(client, path)
+            await vault_cache.sync_note(client, path)
 
             return json.dumps(
                 {
@@ -202,8 +201,7 @@ def register_memory_tools(server, client: VaultClient) -> None:
         try:
             await client.delete_note(path)
 
-            if vault_cache.is_initialized:
-                vault_cache.invalidate_path(path, exists=False)
+            await vault_cache.invalidate_path(path, exists=False)
 
             return json.dumps(
                 {
@@ -250,7 +248,7 @@ def register_memory_tools(server, client: VaultClient) -> None:
         path = memory_manager.get_memory_path(name)
 
         try:
-            data = await client.get_note(path, include_metadata=False)
+            data = await client.get_note(path)
             content = data.get("content", "")
             raw_content = data.get("raw", content)
 
@@ -283,8 +281,7 @@ def register_memory_tools(server, client: VaultClient) -> None:
             full_content = memory_manager.update_memory_content(raw_content, new_content)
             await client.create_note(path, full_content)
 
-            if vault_cache.is_initialized:
-                await vault_cache.sync_note(client, path)
+            await vault_cache.sync_note(client, path)
 
             return json.dumps(
                 {

@@ -66,7 +66,7 @@ def register_link_tools(server: FastMCP, client: VaultClient) -> None:
 
         # Get source note content
         try:
-            source_data = await client.get_note(source_path, include_metadata=False)
+            source_data = await client.get_note(source_path)
             content = source_data.get("raw", source_data.get("content", ""))
         except NoteNotFoundError:
             return json.dumps(
@@ -95,8 +95,7 @@ def register_link_tools(server: FastMCP, client: VaultClient) -> None:
         # Update the note
         try:
             await client.update_note(source_path, new_content)
-            if vault_cache.is_initialized:
-                await vault_cache.sync_note(client, source_path)
+            await vault_cache.sync_note(client, source_path)
         except OPERATIONAL_ERRORS as error:
             return error_json(error)
 
@@ -156,7 +155,7 @@ def register_link_tools(server: FastMCP, client: VaultClient) -> None:
             JSON array of linked note names/paths
         """
         try:
-            data = await client.get_note(path, include_metadata=False)
+            data = await client.get_note(path)
             content = data.get("content", "")
             links = extract_wikilinks(content)
 

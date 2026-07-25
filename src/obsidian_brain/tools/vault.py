@@ -82,7 +82,7 @@ def register_vault_tools(server: FastMCP, client: VaultClient) -> None:
             Failures return {"error": true, "type": "<exception>", "message": "<details>"}.
         """
         try:
-            data = await client.get_note(path, include_metadata=True)
+            data = await client.get_note(path)
 
             # Extract wikilinks from content
             outgoing_links = extract_wikilinks(data.get("content", ""))
@@ -177,8 +177,7 @@ def register_vault_tools(server: FastMCP, client: VaultClient) -> None:
 
         try:
             await client.create_note(path, note_content)
-            if vault_cache.is_initialized:
-                await vault_cache.sync_note(client, path)
+            await vault_cache.sync_note(client, path)
         except OPERATIONAL_ERRORS as error:
             return error_json(error)
 
@@ -207,10 +206,9 @@ def register_vault_tools(server: FastMCP, client: VaultClient) -> None:
         """
         try:
             # Verify note exists first
-            await client.get_note(path, include_metadata=False)
+            await client.get_note(path)
             await client.update_note(path, content)
-            if vault_cache.is_initialized:
-                await vault_cache.sync_note(client, path)
+            await vault_cache.sync_note(client, path)
 
             return json.dumps(
                 {
@@ -252,7 +250,7 @@ def register_vault_tools(server: FastMCP, client: VaultClient) -> None:
         try:
             if heading:
                 # With heading: get current content, find/create heading, append under it
-                data = await client.get_note(path, include_metadata=False)
+                data = await client.get_note(path)
                 current = data.get("raw", data.get("content", ""))
 
                 idx = _find_heading(current, heading)
@@ -265,8 +263,7 @@ def register_vault_tools(server: FastMCP, client: VaultClient) -> None:
             else:
                 # Simple append
                 await client.append_to_note(path, f"\n{content}")
-            if vault_cache.is_initialized:
-                await vault_cache.sync_note(client, path)
+            await vault_cache.sync_note(client, path)
 
             return json.dumps(
                 {
@@ -328,8 +325,7 @@ def register_vault_tools(server: FastMCP, client: VaultClient) -> None:
         """
         try:
             await client.delete_note(path)
-            if vault_cache.is_initialized:
-                vault_cache.invalidate_path(path, exists=False)
+            await vault_cache.invalidate_path(path, exists=False)
 
             return json.dumps(
                 {

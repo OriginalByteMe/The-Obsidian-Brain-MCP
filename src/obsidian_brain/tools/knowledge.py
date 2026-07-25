@@ -74,8 +74,7 @@ def register_knowledge_tools(server, client: VaultClient) -> None:
         try:
             # Create or update the knowledge base file
             await client.create_note(KNOWLEDGE_BASE_PATH, content)
-            if vault_cache.is_initialized:
-                await vault_cache.sync_note(client, KNOWLEDGE_BASE_PATH)
+            await vault_cache.sync_note(client, KNOWLEDGE_BASE_PATH)
 
             return json.dumps(
                 {
@@ -113,7 +112,7 @@ def register_knowledge_tools(server, client: VaultClient) -> None:
         """
         try:
             # Try to read the knowledge base
-            data = await client.get_note(KNOWLEDGE_BASE_PATH, include_metadata=True)
+            data = await client.get_note(KNOWLEDGE_BASE_PATH)
 
             # Extract stats from frontmatter if available
             frontmatter = data.get("frontmatter", {})
