@@ -6,49 +6,62 @@ and return expected JSON shapes.
 """
 
 import json
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
-
 from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp.exceptions import ToolError
 
-from obsidian_brain.exceptions import NoteNotFoundError, ObsidianCLIError
-from obsidian_brain.protocol import VaultClient
+from obsidian_brain.exceptions import (
+    CLINotFoundError,
+    CLITimeoutError,
+    ObsidianCLIError,
+    ObsidianNotRunningError,
+)
 
 
 class MockVaultClient:
     """Mock VaultClient that satisfies the Protocol with canned responses."""
 
     def __init__(self):
-        self.list_directory = AsyncMock(return_value=[
-            {"name": "note1.md", "type": "file"},
-            {"name": "folder1", "type": "folder"},
-        ])
+        self.list_directory = AsyncMock(
+            return_value=[
+                {"name": "note1.md", "type": "file"},
+                {"name": "folder1", "type": "folder"},
+            ]
+        )
         self.get_all_files = AsyncMock(return_value=["note1.md", "folder1/note2.md"])
-        self.get_note = AsyncMock(return_value={
-            "content": "# Test Note\n\nSome content with [[link1]].",
-            "tags": ["test", "example"],
-            "frontmatter": {"title": "Test Note"},
-            "modified": "2026-03-08T00:00:00Z",
-        })
+        self.get_note = AsyncMock(
+            return_value={
+                "content": "# Test Note\n\nSome content with [[link1]].",
+                "tags": ["test", "example"],
+                "frontmatter": {"title": "Test Note"},
+                "modified": "2026-03-08T00:00:00Z",
+            }
+        )
         self.note_exists = AsyncMock(return_value=True)
         self.create_note = AsyncMock()
         self.update_note = AsyncMock()
         self.append_to_note = AsyncMock()
         self.delete_note = AsyncMock()
-        self.search_simple = AsyncMock(return_value=[
-            {
-                "filename": "note1.md",
-                "matches": [{"match": "found text"}],
-                "score": 1.0,
+        self.search_simple = AsyncMock(
+            return_value=[
+                {
+                    "path": "note1.md",
+                    "matches": ["first context", "second context"],
+                    "score": 1.0,
+                }
+            ]
+        )
+        self.get_daily_note = AsyncMock(
+            return_value={
+                "content": "# 2026-03-08\n\nDaily content",
+                "tags": ["daily"],
+                "frontmatter": {"date": "2026-03-08"},
             }
-        ])
-        self.get_daily_note = AsyncMock(return_value={
-            "content": "# 2026-03-08\n\nDaily content",
-            "tags": ["daily"],
-            "frontmatter": {"date": "2026-03-08"},
-        })
+        )
         self.append_daily = AsyncMock()
         self.get_tags = AsyncMock(return_value={"test": 5, "example": 3})
         self.get_backlinks = AsyncMock(return_value=["note2.md"])
@@ -105,10 +118,13 @@ class TestVaultTools:
     @pytest.mark.anyio
     async def test_create_note_calls_client(self, setup):
         server, client = setup
-        result = await server.call_tool("create_note", {
-            "path": "new/note.md",
-            "content": "Hello world",
-        })
+        result = await server.call_tool(
+            "create_note",
+            {
+                "path": "new/note.md",
+                "content": "Hello world",
+            },
+        )
         client.create_note.assert_called_once()
         data = _load_tool_result(result)
         assert data["success"] is True
@@ -120,6 +136,107 @@ class TestVaultTools:
         client.delete_note.assert_called_once()
         data = _load_tool_result(result)
         assert data["success"] is True
+
+    @pytest.mark.parametrize(
+        "current",
+        [
+            "A paragraph mentioning ## Notes inline.",
+            "## Notes and more",
+            "```markdown\n## Notes\n```",
+            "~~~\n## Notes\n~~~",
+        ],
+    )
+    @pytest.mark.anyio
+    async def test_append_heading_ignores_false_positives(self, setup, current):
+        server, client = setup
+        client.get_note.return_value = {"content": current}
+
+        await server.call_tool(
+            "append_to_note",
+            {"path": "test.md", "content": "New item", "heading": "## Notes"},
+        )
+
+        client.update_note.assert_awaited_once_with("test.md", f"{current}\n\n## Notes\n\nNew item")
+
+    @pytest.mark.anyio
+    async def test_append_heading_matches_exact_markdown_heading(self, setup):
+        server, client = setup
+        client.get_note.return_value = {"content": "# Title\n\n## Notes\nExisting item"}
+
+        await server.call_tool(
+            "append_to_note",
+            {"path": "test.md", "content": "New item", "heading": "## Notes"},
+        )
+
+        client.update_note.assert_awaited_once_with(
+            "test.md", "# Title\n\n## Notes\nNew item\nExisting item"
+        )
+
+    @pytest.mark.anyio
+    async def test_writes_invalidate_cached_note(self, setup, monkeypatch):
+        from obsidian_brain.tools import vault as vault_tools
+
+        server, _ = setup
+        invalidated: list[tuple[str, bool]] = []
+
+        def record_invalidation(path: str, *, exists: bool) -> None:
+            invalidated.append((path, exists))
+
+        monkeypatch.setattr(
+            vault_tools,
+            "vault_cache",
+            SimpleNamespace(
+                is_initialized=True,
+                invalidate_path=record_invalidation,
+            ),
+        )
+
+        await server.call_tool("create_note", {"path": "created.md", "content": "Created"})
+        await server.call_tool("update_note", {"path": "updated.md", "content": "Updated"})
+        await server.call_tool("append_to_note", {"path": "appended.md", "content": "Appended"})
+        await server.call_tool("delete_note", {"path": "deleted.md"})
+
+        assert invalidated == [
+            ("created.md", True),
+            ("updated.md", True),
+            ("appended.md", True),
+            ("deleted.md", False),
+        ]
+
+    @pytest.mark.parametrize(
+        ("error", "error_type"),
+        [
+            (CLINotFoundError(), "CLINotFoundError"),
+            (ObsidianNotRunningError(), "ObsidianNotRunningError"),
+            (CLITimeoutError(1.0, ["obsidian", "files"]), "CLITimeoutError"),
+            (
+                ObsidianCLIError(2, "failed", ["obsidian", "files"]),
+                "ObsidianCLIError",
+            ),
+        ],
+    )
+    @pytest.mark.anyio
+    async def test_vault_serializes_operational_errors(self, setup, error, error_type):
+        server, client = setup
+        client.list_directory.side_effect = error
+
+        result = await server.call_tool("list_vault_files", {"path": "/"})
+        data = _load_tool_result(result)
+
+        assert set(data) == {"error", "type", "message"}
+        assert data["error"] is True
+        assert data["type"] == error_type
+        assert data["message"] == str(error)
+
+    @pytest.mark.anyio
+    async def test_vault_does_not_serialize_unexpected_errors(self, setup):
+        server, client = setup
+        client.list_directory.side_effect = RuntimeError("programming bug")
+
+        with pytest.raises(ToolError, match="programming bug") as raised:
+            await server.call_tool("list_vault_files", {"path": "/"})
+
+        assert isinstance(raised.value.__cause__, RuntimeError)
 
     @pytest.mark.anyio
     async def test_list_vault_files(self, setup):
@@ -149,7 +266,15 @@ class TestSearchTools:
         client.search_simple.assert_called_once()
         data = _load_tool_result(result)
         assert data["success"] is True
-        assert data["total_matches"] == 1
+        assert data["total_matches"] == 2
+        assert data["results"] == [
+            {
+                "path": "note1.md",
+                "matches": ["first context", "second context"],
+                "score": 1.0,
+            }
+        ]
+        client.search_simple.assert_awaited_once_with("test")
 
     @pytest.mark.anyio
     async def test_search_content_empty_query(self, setup):
@@ -166,6 +291,51 @@ class TestSearchTools:
         tool_names = [t.name for t in tools]
         assert "search_advanced" not in tool_names
         assert "search_jsonlogic" not in tool_names
+
+    @pytest.mark.anyio
+    async def test_search_schema_omits_unused_context_length(self, setup):
+        server, _ = setup
+        tool = next(tool for tool in await server.list_tools() if tool.name == "search_content")
+
+        assert set(tool.inputSchema["properties"]) == {"query"}
+
+    @pytest.mark.parametrize(
+        ("error", "error_type"),
+        [
+            (CLINotFoundError(), "CLINotFoundError"),
+            (ObsidianNotRunningError(), "ObsidianNotRunningError"),
+            (
+                CLITimeoutError(1.0, ["obsidian", "search:context"]),
+                "CLITimeoutError",
+            ),
+            (
+                ObsidianCLIError(2, "failed", ["obsidian", "search:context"]),
+                "ObsidianCLIError",
+            ),
+        ],
+    )
+    @pytest.mark.anyio
+    async def test_search_serializes_operational_errors(self, setup, error, error_type):
+        server, client = setup
+        client.search_simple.side_effect = error
+
+        result = await server.call_tool("search_content", {"query": "test"})
+        data = _load_tool_result(result)
+
+        assert set(data) == {"error", "type", "message"}
+        assert data["error"] is True
+        assert data["type"] == error_type
+        assert data["message"] == str(error)
+
+    @pytest.mark.anyio
+    async def test_search_does_not_serialize_unexpected_errors(self, setup):
+        server, client = setup
+        client.search_simple.side_effect = RuntimeError("programming bug")
+
+        with pytest.raises(ToolError, match="programming bug") as raised:
+            await server.call_tool("search_content", {"query": "test"})
+
+        assert isinstance(raised.value.__cause__, RuntimeError)
 
 
 class TestDailyTools:
@@ -210,10 +380,13 @@ class TestDailyTools:
     @pytest.mark.anyio
     async def test_append_to_daily_calls_client(self, setup):
         server, client = setup
-        result = await server.call_tool("append_to_daily", {
-            "content": "Test entry",
-            "date": "2026-03-08",
-        })
+        result = await server.call_tool(
+            "append_to_daily",
+            {
+                "content": "Test entry",
+                "date": "2026-03-08",
+            },
+        )
         client.append_daily.assert_called_once()
         data = _load_tool_result(result)
         assert data["success"] is True

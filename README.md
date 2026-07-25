@@ -154,6 +154,7 @@ Every book you read strengthens your second brain.
 1. **Obsidian 1.12.4+** with the CLI enabled:
    - Open **Obsidian Settings > General > Command line interface**
    - Enable the CLI toggle
+   - Keep the Obsidian desktop app running while the server uses the CLI
    - The `obsidian` command must be on your PATH
    - Alternatively, set the `OBSIDIAN_CLI_PATH` environment variable to the full path of the `obsidian` binary
 2. **uv** package manager: [Install uv](https://docs.astral.sh/uv/getting-started/installation/)
@@ -329,9 +330,29 @@ obsidian-brain
 
 | Variable | Required | Default | Description |
 |----------|:--------:|---------|-------------|
-| `OBSIDIAN_CLI_PATH` | | auto-detected | Path to Obsidian CLI binary (if not on PATH) |
+| `OBSIDIAN_CLI_PATH` | | auto-detected | Obsidian CLI executable path when it is not on `PATH` |
+| `OBSIDIAN_VAULT` | | CLI default/active vault | Exact Obsidian vault name (not a filesystem path) |
 
-The server auto-detects the `obsidian` CLI binary on your PATH. Set `OBSIDIAN_CLI_PATH` only if the binary is installed in a non-standard location.
+The server discovers the CLI lazily. Set `OBSIDIAN_CLI_PATH` only for a non-standard executable location. Set `OBSIDIAN_VAULT` when the CLI should target a specific vault; otherwise Obsidian's default/active vault is used.
+
+Onboarding writes its vault profile to the visible `Obsidian Brain/config.yml` path.
+
+---
+
+## MCP Resources
+
+| Resource | Description |
+|----------|-------------|
+| `vault://files` | Cached JSON index of every vault file, with its path and whether it is text-readable; Markdown entries also include a note URI |
+| `vault://note/{path}` | Parameterized Markdown note reader; use the percent-encoded URIs included for readable entries in `vault://files` |
+| `vault://structure` | Cached vault structure and note metadata |
+| `vault://tags` | Cached tag counts |
+| `vault://stats` | Cached vault statistics |
+| `vault://knowledge` | Persistent Markdown knowledge base |
+
+Call `refresh_vault_structure` before using the cached resources and again when vault changes need to appear. It populates the cached vault structure, including the all-file index and Markdown note metadata. Non-Markdown files are indexed but marked unreadable and do not receive a `vault://note/{path}` URI; the note resource is Markdown-only.
+
+MCP resource discovery and reads are what this server can guarantee. An IDE's `@` picker is a host feature; no MCP server change can force resources into or customize that UI. Use the client's MCP resource browser when available, or read `vault://files` and then a returned note URI.
 
 ---
 
@@ -405,12 +426,17 @@ cd The-Obsidian-Brain-MCP
 # Install dependencies
 uv sync --dev
 
+# Run the server from the package module
+uv run python -m obsidian_brain.server
+
 # Run tests
 uv run pytest
 
 # Lint
 uv run ruff check .
 ```
+
+The project uses `mcp.server.fastmcp.FastMCP` from the official MCP Python SDK v1 line and pins `mcp<2`. MCP v2 remains alpha, while standalone `fastmcp` v4 requires the `mcp==2.0.0b2` prerelease.
 
 ---
 

@@ -54,9 +54,7 @@ class MockVaultClient:
             raise NoteNotFoundError(path)
         self.deleted_notes.append(path)
 
-    async def search_simple(
-        self, query: str, context_length: int = 100
-    ) -> list[dict[str, Any]]:
+    async def search_simple(self, query: str, context_length: int = 100) -> list[dict[str, Any]]:
         return []
 
     async def get_daily_note(self, date: str | None = None) -> dict[str, Any]:
@@ -107,6 +105,7 @@ class TestKnowledgeToolRegistration:
             def decorator(fn):
                 tools[fn.__name__] = fn
                 return fn
+
             return decorator
 
         server.tool = capture_tool
@@ -130,6 +129,7 @@ class TestKnowledgeToolRegistration:
             def decorator(fn):
                 tools[fn.__name__] = fn
                 return fn
+
             return decorator
 
         server.tool = capture_tool
@@ -177,6 +177,7 @@ class TestMemoryToolRegistration:
             def decorator(fn):
                 tools[fn.__name__] = fn
                 return fn
+
             return decorator
 
         server.tool = capture_tool
@@ -209,6 +210,7 @@ class TestMemoryToolRegistration:
             def decorator(fn):
                 tools[fn.__name__] = fn
                 return fn
+
             return decorator
 
         server.tool = capture_tool
@@ -232,6 +234,7 @@ class TestMemoryToolRegistration:
             def decorator(fn):
                 tools[fn.__name__] = fn
                 return fn
+
             return decorator
 
         server.tool = capture_tool
@@ -269,6 +272,7 @@ class TestMemoryToolRegistration:
             def decorator(fn):
                 tools[fn.__name__] = fn
                 return fn
+
             return decorator
 
         server.tool = capture_tool
@@ -294,6 +298,7 @@ class TestMemoryToolRegistration:
             def decorator(fn):
                 tools[fn.__name__] = fn
                 return fn
+
             return decorator
 
         server.tool = capture_tool
@@ -318,6 +323,7 @@ class TestMemoryToolRegistration:
             def decorator(fn):
                 tools[fn.__name__] = fn
                 return fn
+
             return decorator
 
         server.tool = capture_tool
@@ -325,8 +331,12 @@ class TestMemoryToolRegistration:
         register_memory_tools(server, client)
 
         # Mock cache as initialized with invalidate_path
-        with patch.object(type(vault_cache), "is_initialized", new_callable=PropertyMock, return_value=True), \
-             patch.object(vault_cache, "invalidate_path") as mock_invalidate:
+        with (
+            patch.object(
+                type(vault_cache), "is_initialized", new_callable=PropertyMock, return_value=True
+            ),
+            patch.object(vault_cache, "invalidate_path") as mock_invalidate,
+        ):
             result = await tools["write_memory"](
                 name="test",
                 content="test content",
@@ -361,6 +371,7 @@ class TestOnboardingToolRegistration:
             def decorator(fn):
                 tools[fn.__name__] = fn
                 return fn
+
             return decorator
 
         server.tool = capture_tool
@@ -370,6 +381,33 @@ class TestOnboardingToolRegistration:
         result = await tools["check_onboarding_status"]()
         data = json.loads(result)
         assert data["onboarded"] is False
+
+    @pytest.mark.asyncio
+    async def test_check_onboarding_finds_yaml_config_outside_markdown_listing(self):
+        """The exact config check must not depend on the Markdown-only file list."""
+        from obsidian_brain.onboarding import CONFIG_PATH
+        from obsidian_brain.tools.onboarding import register_onboarding_tools
+
+        server = MagicMock()
+        tools = {}
+
+        def capture_tool():
+            def decorator(fn):
+                tools[fn.__name__] = fn
+                return fn
+
+            return decorator
+
+        server.tool = capture_tool
+        client = MockVaultClient()
+        client._files = ["Obsidian Brain/memories/conventions.md", "Inbox.md"]
+        client._notes[CONFIG_PATH] = {"content": "version: 1"}
+        register_onboarding_tools(server, client)
+
+        result = await tools["check_onboarding_status"]()
+        data = json.loads(result)
+        assert data["onboarded"] is True
+        assert data["config_path"] == CONFIG_PATH
 
     @pytest.mark.asyncio
     async def test_get_vault_config_not_found(self):
@@ -383,6 +421,7 @@ class TestOnboardingToolRegistration:
             def decorator(fn):
                 tools[fn.__name__] = fn
                 return fn
+
             return decorator
 
         server.tool = capture_tool
@@ -424,6 +463,7 @@ class TestNoObsidianClientImports:
         """tools/knowledge.py has no ObsidianClient references."""
         import inspect
         from obsidian_brain.tools import knowledge
+
         source = inspect.getsource(knowledge)
         assert "ObsidianClient" not in source
 
@@ -431,6 +471,7 @@ class TestNoObsidianClientImports:
         """tools/memory.py has no ObsidianClient references."""
         import inspect
         from obsidian_brain.tools import memory
+
         source = inspect.getsource(memory)
         assert "ObsidianClient" not in source
 
@@ -438,6 +479,7 @@ class TestNoObsidianClientImports:
         """tools/onboarding.py has no ObsidianClient references."""
         import inspect
         from obsidian_brain.tools import onboarding
+
         source = inspect.getsource(onboarding)
         assert "ObsidianClient" not in source
 
@@ -445,6 +487,7 @@ class TestNoObsidianClientImports:
         """resources/structure.py has no ObsidianClient references."""
         import inspect
         from obsidian_brain.resources import structure
+
         source = inspect.getsource(structure)
         assert "ObsidianClient" not in source
 
@@ -452,5 +495,6 @@ class TestNoObsidianClientImports:
         """resources/knowledge.py has no ObsidianClient references."""
         import inspect
         from obsidian_brain.resources import knowledge
+
         source = inspect.getsource(knowledge)
         assert "ObsidianClient" not in source

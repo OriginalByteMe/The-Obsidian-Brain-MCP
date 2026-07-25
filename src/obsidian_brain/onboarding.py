@@ -20,9 +20,7 @@ from .models import NoteMetadata, VaultStructure
 if TYPE_CHECKING:
     from .protocol import VaultClient
 
-# Configuration paths within the vault
-# Note: Using visible folder (not dot-prefixed) because Obsidian's REST API
-# doesn't return hidden folders in directory listings
+# Keep generated files visible in Obsidian and address them by vault-relative path.
 CONFIG_PATH = "Obsidian Brain/config.yml"
 MEMORIES_PATH = "Obsidian Brain/memories"
 
@@ -61,7 +59,7 @@ class OnboardingManager:
     Manages vault onboarding and configuration.
 
     The onboarding process:
-    1. Check if .obsidian-brain/ folder exists
+    1. Check if the Obsidian Brain/ folder exists
     2. If not, analyze the vault to learn patterns
     3. Create config.yml with vault profile
     4. Generate initial memories about vault structure
@@ -82,7 +80,7 @@ class OnboardingManager:
         Returns:
             Dict with status and recommendations
         """
-        has_config = any(f.startswith(".obsidian-brain/") for f in file_list)
+        has_brain_files = any(f.startswith("Obsidian Brain/") for f in file_list)
         config_exists = CONFIG_PATH in file_list
 
         if config_exists:
@@ -92,12 +90,12 @@ class OnboardingManager:
                 "memories_path": MEMORIES_PATH,
                 "message": "Vault is already onboarded. Ready to use.",
             }
-        elif has_config:
+        elif has_brain_files:
             return {
                 "onboarded": False,
                 "partial": True,
                 "message": (
-                    ".obsidian-brain folder exists but config.yml not found. "
+                    "Obsidian Brain folder exists but config.yml not found. "
                     "Run onboarding to complete setup."
                 ),
             }
@@ -141,9 +139,7 @@ class OnboardingManager:
 
         return analysis
 
-    def _analyze_folders(
-        self, structure: VaultStructure, analysis: VaultAnalysis
-    ) -> VaultAnalysis:
+    def _analyze_folders(self, structure: VaultStructure, analysis: VaultAnalysis) -> VaultAnalysis:
         """Analyze folder structure for patterns like PARA, Zettelkasten, etc."""
         # Extract folder names at each level
         folder_names: list[str] = []
@@ -204,9 +200,7 @@ class OnboardingManager:
         analysis.folder_patterns = patterns if patterns else ["Custom/Flat Structure"]
         return analysis
 
-    def _analyze_tags(
-        self, notes: list[NoteMetadata], analysis: VaultAnalysis
-    ) -> VaultAnalysis:
+    def _analyze_tags(self, notes: list[NoteMetadata], analysis: VaultAnalysis) -> VaultAnalysis:
         """Analyze tag usage patterns."""
         all_tags: list[str] = []
         for note in notes:
@@ -287,9 +281,7 @@ class OnboardingManager:
         analysis.frontmatter_patterns = patterns
         return analysis
 
-    def _analyze_naming(
-        self, notes: list[NoteMetadata], analysis: VaultAnalysis
-    ) -> VaultAnalysis:
+    def _analyze_naming(self, notes: list[NoteMetadata], analysis: VaultAnalysis) -> VaultAnalysis:
         """Analyze note naming conventions."""
         patterns: list[str] = []
         filenames = [note.path.split("/")[-1].replace(".md", "") for note in notes]
@@ -405,10 +397,12 @@ class OnboardingManager:
         lines.append("")
 
         # Tags section
-        lines.extend([
-            "## Tag Conventions",
-            "",
-        ])
+        lines.extend(
+            [
+                "## Tag Conventions",
+                "",
+            ]
+        )
 
         if analysis.tag_prefixes:
             lines.append(f"**Tag Prefixes**: {', '.join(f'#{p}/' for p in analysis.tag_prefixes)}")
@@ -421,10 +415,12 @@ class OnboardingManager:
             lines.append("")
 
         # Naming section
-        lines.extend([
-            "## Naming Conventions",
-            "",
-        ])
+        lines.extend(
+            [
+                "## Naming Conventions",
+                "",
+            ]
+        )
 
         if analysis.naming_patterns:
             for pattern in analysis.naming_patterns:
@@ -435,12 +431,15 @@ class OnboardingManager:
 
         # Frontmatter section
         if analysis.common_frontmatter_keys:
-            lines.extend([
-                "## Frontmatter Conventions",
-                "",
-                "**Common Keys**: " + ", ".join(f"`{k}`" for k in analysis.common_frontmatter_keys[:10]),
-                "",
-            ])
+            lines.extend(
+                [
+                    "## Frontmatter Conventions",
+                    "",
+                    "**Common Keys**: "
+                    + ", ".join(f"`{k}`" for k in analysis.common_frontmatter_keys[:10]),
+                    "",
+                ]
+            )
 
             if analysis.frontmatter_patterns:
                 for pattern, desc in analysis.frontmatter_patterns.items():
@@ -449,19 +448,23 @@ class OnboardingManager:
 
         # Templates section
         if analysis.templates_found:
-            lines.extend([
-                "## Templates",
-                "",
-                f"**Template Folder**: `{analysis.template_folder}`",
-                f"**Templates Found**: {len(analysis.templates_found)}",
-                "",
-            ])
+            lines.extend(
+                [
+                    "## Templates",
+                    "",
+                    f"**Template Folder**: `{analysis.template_folder}`",
+                    f"**Templates Found**: {len(analysis.templates_found)}",
+                    "",
+                ]
+            )
 
-        lines.extend([
-            "---",
-            "",
-            "*This memory was auto-generated during onboarding. Update as your vault evolves.*",
-        ])
+        lines.extend(
+            [
+                "---",
+                "",
+                "*This memory was auto-generated during onboarding. Update as your vault evolves.*",
+            ]
+        )
 
         return "\n".join(lines)
 
@@ -501,10 +504,12 @@ class OnboardingManager:
         lines.append("")
 
         # Tag guidance
-        lines.extend([
-            "## Tagging",
-            "",
-        ])
+        lines.extend(
+            [
+                "## Tagging",
+                "",
+            ]
+        )
 
         if analysis.tag_prefixes:
             lines.append("Use hierarchical tags with these root prefixes:")
@@ -514,31 +519,37 @@ class OnboardingManager:
 
         # Frontmatter guidance
         if analysis.common_frontmatter_keys:
-            lines.extend([
-                "## Frontmatter",
-                "",
-                "Include these standard frontmatter keys:",
-                "",
-            ])
+            lines.extend(
+                [
+                    "## Frontmatter",
+                    "",
+                    "Include these standard frontmatter keys:",
+                    "",
+                ]
+            )
             for key in analysis.common_frontmatter_keys[:8]:
                 lines.append(f"- `{key}`")
             lines.append("")
 
         # Folder guidance
         if analysis.folder_purposes:
-            lines.extend([
-                "## File Organization",
-                "",
-            ])
+            lines.extend(
+                [
+                    "## File Organization",
+                    "",
+                ]
+            )
             for folder, purpose in analysis.folder_purposes.items():
                 lines.append(f"- Place {purpose.lower()} in `{folder}/`")
             lines.append("")
 
-        lines.extend([
-            "---",
-            "",
-            "*Update this memory as conventions evolve.*",
-        ])
+        lines.extend(
+            [
+                "---",
+                "",
+                "*Update this memory as conventions evolve.*",
+            ]
+        )
 
         return "\n".join(lines)
 

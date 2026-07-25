@@ -4,9 +4,8 @@ Tests for the FastMCP server initialization and tool registration.
 
 import importlib
 import os
-import pkgutil
-
-import pytest
+import subprocess
+import sys
 
 from mcp.server.fastmcp import FastMCP
 
@@ -32,6 +31,20 @@ class TestServerInit:
         from obsidian_brain.server import client
 
         assert isinstance(client, ObsidianCLIClient)
+
+    def test_server_imports_without_installed_cli(self):
+        """Importing the server must not require Obsidian to be installed."""
+        env = os.environ.copy()
+        env["PATH"] = ""
+        _ = env.pop("OBSIDIAN_CLI_PATH", None)
+        result = subprocess.run(
+            [sys.executable, "-c", "import obsidian_brain.server"],
+            capture_output=True,
+            env=env,
+            text=True,
+            timeout=10,
+        )
+        assert result.returncode == 0, result.stderr
 
     def test_main_is_callable(self):
         """main() function exists and is callable."""

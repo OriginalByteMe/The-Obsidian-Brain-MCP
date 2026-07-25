@@ -98,6 +98,20 @@ async def test_refresh_uses_get_all_files_not_list_directory():
     client.list_directory.assert_not_called()
 
 
+@pytest.mark.asyncio
+async def test_refresh_indexes_all_files_but_fetches_only_markdown_metadata():
+    """The file index is complete while VaultStructure remains note-oriented."""
+    files = ["note.md", "assets/cover.png", "board.canvas", "config.yml"]
+    client = _make_mock_client(files=files, notes={"note.md": {"content": "# Note"}})
+    cache = VaultCache()
+
+    structure = await cache.refresh(client)
+
+    assert cache.get_file_paths() == files
+    assert [note.path for note in structure.notes] == ["note.md"]
+    client.get_note.assert_awaited_once_with("note.md", include_metadata=True)
+
+
 # --- Semaphore-bounded concurrency ---
 
 
@@ -285,8 +299,7 @@ async def test_folder_hierarchy_built_from_paths():
         "root.md",
     ]
     notes = {
-        fp: {"content": f"# {fp}", "tags": [], "frontmatter": {}, "modified": None}
-        for fp in files
+        fp: {"content": f"# {fp}", "tags": [], "frontmatter": {}, "modified": None} for fp in files
     }
 
     client = _make_mock_client(files, notes)
@@ -334,8 +347,8 @@ async def test_note_read_failure_skipped():
 
 
 @pytest.mark.asyncio
-async def test_invalidate_path():
-    """invalidate_path should remove note and its backlink references."""
+async def test_invalidate_path_removes_stale_metadata_but_tracks_file_membership():
+    """Invalidation must not serve stale metadata or lose known file paths."""
     files = ["a.md", "b.md"]
     notes = {
         "a.md": {
@@ -356,13 +369,15 @@ async def test_invalidate_path():
     cache = VaultCache()
     await cache.refresh(client)
 
-    # b.md should have backlink from a.md
     assert cache.get_backlinks("b.md") == ["a.md"]
 
-    # Invalidate a.md
     cache.invalidate_path("a.md")
 
-    # a.md should no longer appear in notes
     assert cache.get_note_metadata("a.md") is None
-    # a.md should be removed from b.md's backlinks
     assert cache.get_backlinks("b.md") == []
+    assert cache.get_file_paths() == ["a.md", "b.md"]
+
+    cache.invalidate_path("created.md", exists=True)
+    cache.invalidate_path("b.md", exists=False)
+
+    assert cache.get_file_paths() == ["a.md", "created.md"]

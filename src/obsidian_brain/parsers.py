@@ -10,6 +10,7 @@ parsers handle multiple possible formats for each command.
 """
 
 import json
+import re
 from typing import Any
 
 
@@ -42,7 +43,7 @@ def _parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:
         return {}, text
 
     yaml_block = stripped[3:end].strip()
-    body = stripped[end + 3:].lstrip("\n")
+    body = stripped[end + 3 :].lstrip("\n")
 
     # Simple YAML-like key: value parsing (avoids PyYAML dependency)
     frontmatter: dict[str, Any] = {}
@@ -68,7 +69,7 @@ def _parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:
             current_list = None
             colon_idx = line_stripped.index(":")
             key = line_stripped[:colon_idx].strip()
-            value = line_stripped[colon_idx + 1:].strip()
+            value = line_stripped[colon_idx + 1 :].strip()
             current_key = key
             if value:
                 # Remove surrounding quotes
@@ -154,30 +155,41 @@ def parse_file_list(data: list | str) -> list[str]:
 
 
 def parse_search_results(data: list | str) -> list[dict[str, Any]]:
-    """Parse CLI JSON output from `obsidian search query="..." format=json`.
+    """Normalize grep-style ``search:context`` text or the legacy JSON list."""
+    if isinstance(data, str):
+        try:
+            parsed = json.loads(data)
+        except json.JSONDecodeError:
+            matches_by_path: dict[str, list[str]] = {}
+            for line in data.splitlines():
+                match = re.match(r"^(.+?):\d+: ?(.*)$", line)
+                if match:
+                    matches_by_path.setdefault(match.group(1), []).append(match.group(2))
+            return [
+                {"path": path, "matches": matches, "score": 0.0}
+                for path, matches in matches_by_path.items()
+            ]
+        if not isinstance(parsed, list):
+            return []
+        items = parsed
+    else:
+        items = data
 
-    Expected input shape:
-        [
-            {
-                "path": "Projects/MyProject.md",
-                "matches": ["matched **text** snippet"],
-                "score": 0.95
-            },
-            ...
-        ]
-
-    Returns:
-        List of normalized result dicts with keys: path, matches, score.
-    """
-    items = _ensure_list(data)
     results = []
     for item in items:
         if isinstance(item, dict):
-            results.append({
-                "path": item.get("path", item.get("file", "")),
-                "matches": item.get("matches", item.get("snippets", [])),
-                "score": item.get("score", 0.0),
-            })
+            matches = item.get("matches", item.get("snippets", []))
+            if isinstance(matches, str):
+                matches = [matches]
+            elif not isinstance(matches, list):
+                matches = []
+            results.append(
+                {
+                    "path": item.get("path", item.get("file", "")),
+                    "matches": matches,
+                    "score": item.get("score", 0.0),
+                }
+            )
         else:
             results.append({"path": str(item), "matches": [], "score": 0.0})
     return results

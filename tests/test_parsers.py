@@ -110,6 +110,28 @@ class TestParseSearchResults:
         result = parse_search_results(json_str)
         assert len(result) == 2
 
+    def test_parses_grep_style_context_and_groups_matches_by_path(self):
+        output = (
+            "Projects/MyProject.md:7: first matching line\n"
+            "Projects/MyProject.md:11: second matching line\n"
+            "Archive/Old.md:2: archived match\n"
+        )
+
+        result = parse_search_results(output)
+
+        assert result == [
+            {
+                "path": "Projects/MyProject.md",
+                "matches": ["first matching line", "second matching line"],
+                "score": 0.0,
+            },
+            {
+                "path": "Archive/Old.md",
+                "matches": ["archived match"],
+                "score": 0.0,
+            },
+        ]
+
 
 class TestParseTags:
     """Tests for parse_tags parser."""

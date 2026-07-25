@@ -26,7 +26,7 @@ def register_onboarding_tools(server, client: VaultClient) -> None:
         """
         Check if this vault has been onboarded.
 
-        Onboarding creates a `.obsidian-brain/` folder with:
+        Onboarding creates the visible `Obsidian Brain/` folder with:
         - config.yml: Vault profile and detected patterns
         - memories/: Persistent memory files for cross-session context
 
@@ -37,18 +37,22 @@ def register_onboarding_tools(server, client: VaultClient) -> None:
             - recommendation: suggested next action
         """
         try:
-            # List root to check for .obsidian-brain folder
-            all_files = await client.get_all_files("/")
+            if await client.note_exists(CONFIG_PATH):
+                all_files = [CONFIG_PATH]
+            else:
+                all_files = await client.get_all_files("/")
 
             status = onboarding_manager.check_onboarding_status(all_files)
             return json.dumps(status)
 
         except ObsidianCLIError as e:
-            return json.dumps({
-                "error": True,
-                "type": "ObsidianCLIError",
-                "message": str(e),
-            })
+            return json.dumps(
+                {
+                    "error": True,
+                    "type": "ObsidianCLIError",
+                    "message": str(e),
+                }
+            )
 
     @server.tool()
     async def run_onboarding() -> str:
@@ -63,9 +67,9 @@ def register_onboarding_tools(server, client: VaultClient) -> None:
         5. Detects naming patterns
 
         Creates:
-        - `.obsidian-brain/config.yml` - Vault profile and patterns
-        - `.obsidian-brain/memories/vault-overview.md` - Structure overview
-        - `.obsidian-brain/memories/conventions.md` - Usage guidelines
+        - `Obsidian Brain/config.yml` - Vault profile and patterns
+        - `Obsidian Brain/memories/vault-overview.md` - Structure overview
+        - `Obsidian Brain/memories/conventions.md` - Usage guidelines
 
         **Prerequisites**: Call `refresh_vault_structure` first to populate the cache.
 
@@ -79,12 +83,14 @@ def register_onboarding_tools(server, client: VaultClient) -> None:
         try:
             structure = vault_cache.get_structure()
         except CacheNotInitializedError:
-            return json.dumps({
-                "error": True,
-                "type": "CacheNotInitializedError",
-                "message": "Vault cache not initialized. Call refresh_vault_structure first.",
-                "suggestion": "Run refresh_vault_structure before run_onboarding",
-            })
+            return json.dumps(
+                {
+                    "error": True,
+                    "type": "CacheNotInitializedError",
+                    "message": "Vault cache not initialized. Call refresh_vault_structure first.",
+                    "suggestion": "Run refresh_vault_structure before run_onboarding",
+                }
+            )
 
         # Analyze the vault
         analysis = onboarding_manager.analyze_vault(structure)
@@ -111,32 +117,36 @@ def register_onboarding_tools(server, client: VaultClient) -> None:
             await client.create_note(conventions_path, conventions_memory)
             files_created.append(conventions_path)
 
-            return json.dumps({
-                "success": True,
-                "message": "Vault onboarding completed successfully",
-                "analysis_summary": {
-                    "organizational_systems": analysis.folder_patterns,
-                    "folder_purposes": analysis.folder_purposes,
-                    "tag_prefixes": analysis.tag_prefixes,
-                    "tag_count": len(analysis.top_tags),
-                    "templates_found": len(analysis.templates_found),
-                    "naming_patterns": analysis.naming_patterns,
-                    "common_frontmatter_keys": analysis.common_frontmatter_keys[:5],
-                },
-                "files_created": files_created,
-                "next_steps": [
-                    "Review the generated config at .obsidian-brain/config.yml",
-                    "Read memories with list_memories and read_memory",
-                    "Create custom memories as you learn about the vault",
-                ],
-            })
+            return json.dumps(
+                {
+                    "success": True,
+                    "message": "Vault onboarding completed successfully",
+                    "analysis_summary": {
+                        "organizational_systems": analysis.folder_patterns,
+                        "folder_purposes": analysis.folder_purposes,
+                        "tag_prefixes": analysis.tag_prefixes,
+                        "tag_count": len(analysis.top_tags),
+                        "templates_found": len(analysis.templates_found),
+                        "naming_patterns": analysis.naming_patterns,
+                        "common_frontmatter_keys": analysis.common_frontmatter_keys[:5],
+                    },
+                    "files_created": files_created,
+                    "next_steps": [
+                        f"Review the generated config at {CONFIG_PATH}",
+                        "Read memories with list_memories and read_memory",
+                        "Create custom memories as you learn about the vault",
+                    ],
+                }
+            )
 
         except ObsidianCLIError as e:
-            return json.dumps({
-                "error": True,
-                "type": "ObsidianCLIError",
-                "message": str(e),
-            })
+            return json.dumps(
+                {
+                    "error": True,
+                    "type": "ObsidianCLIError",
+                    "message": str(e),
+                }
+            )
 
     @server.tool()
     async def get_vault_config() -> str:
@@ -157,15 +167,19 @@ def register_onboarding_tools(server, client: VaultClient) -> None:
             data = await client.get_note(CONFIG_PATH, include_metadata=False)
             content = data.get("content", "")
 
-            return json.dumps({
-                "exists": True,
-                "path": CONFIG_PATH,
-                "content": content,
-            })
+            return json.dumps(
+                {
+                    "exists": True,
+                    "path": CONFIG_PATH,
+                    "content": content,
+                }
+            )
 
         except Exception:
-            return json.dumps({
-                "exists": False,
-                "path": CONFIG_PATH,
-                "message": "Vault not onboarded. Run run_onboarding first.",
-            })
+            return json.dumps(
+                {
+                    "exists": False,
+                    "path": CONFIG_PATH,
+                    "message": "Vault not onboarded. Run run_onboarding first.",
+                }
+            )

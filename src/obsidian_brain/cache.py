@@ -26,8 +26,7 @@ class CacheNotInitializedError(Exception):
 
     def __init__(self):
         super().__init__(
-            "Vault structure cache not initialized. "
-            "Call refresh_vault_structure tool first."
+            "Vault structure cache not initialized. Call refresh_vault_structure tool first."
         )
 
 
@@ -40,6 +39,7 @@ class VaultCache:
     - Note metadata (tags, links, frontmatter)
     - Backlink index (computed from outgoing links)
     - Aggregate statistics
+    - Complete vault file paths (including non-Markdown attachments)
 
     Usage:
         cache = VaultCache()
@@ -49,6 +49,7 @@ class VaultCache:
 
     def __init__(self):
         self._structure: VaultStructure | None = None
+        self._file_paths: list[str] = []
         self._lock = asyncio.Lock()
         self._backlink_index: dict[str, list[str]] = {}
 
@@ -70,6 +71,12 @@ class VaultCache:
         if self._structure is None:
             raise CacheNotInitializedError()
         return self._structure
+
+    def get_file_paths(self) -> list[str]:
+        """Get every vault-relative file path from the latest refresh."""
+        if not self.is_initialized:
+            raise CacheNotInitializedError()
+        return self._file_paths
 
     def get_backlinks(self, path: str) -> list[str]:
         """
@@ -119,29 +126,29 @@ class VaultCache:
                 tag_counts[tag] = tag_counts.get(tag, 0) + 1
         return tag_counts
 
-    def invalidate_path(self, path: str) -> None:
+    def invalidate_path(self, path: str, *, exists: bool | None = None) -> None:
         """
-        Invalidate cached data for a specific note path.
+        Invalidate cached note metadata and optionally update file membership.
 
-        Removes the note from the cached structure so stale data isn't served.
-        A full refresh() is needed to get updated data for this path.
+        The full file index remains authoritative for resource discovery while
+        stale note metadata is removed until the next refresh.
 
         Args:
-            path: Note path to invalidate
+            path: Vault-relative file path to invalidate.
+            exists: True after a create/write, False after deletion, or None
+                to preserve current file-index membership.
         """
         if self._structure is None:
             return
 
-        # Remove note from cached notes list
-        self._structure.notes = [
-            n for n in self._structure.notes if n.path != path
-        ]
+        if exists is True and path not in self._file_paths:
+            self._file_paths.append(path)
+        elif exists is False:
+            self._file_paths = [item for item in self._file_paths if item != path]
 
-        # Remove from backlink index
+        self._structure.notes = [note for note in self._structure.notes if note.path != path]
         self._backlink_index.pop(path, None)
-
-        # Remove references to this path in other backlink entries
-        for target, sources in self._backlink_index.items():
+        for sources in self._backlink_index.values():
             if path in sources:
                 sources.remove(path)
 
@@ -190,7 +197,7 @@ class VaultCache:
         folders = self._build_folder_hierarchy(file_paths)
 
         # Step 3: Fetch metadata for all markdown files with bounded concurrency
-        md_files = [f for f in file_paths if f.endswith(".md")]
+        md_files = [path for path in file_paths if path.lower().endswith(".md")]
         notes = await self._fetch_notes_concurrent(client, md_files)
 
         # Step 4: Build backlink index
@@ -218,6 +225,8 @@ class VaultCache:
             total_links=total_links,
             orphan_notes=orphan_count,
         )
+
+        self._file_paths = file_paths
 
         return VaultStructure(
             folders=folders,
@@ -289,9 +298,7 @@ class VaultCache:
 
         return root_folders
 
-    async def _get_directory_tree(
-        self, client: "VaultClient", path: str
-    ) -> dict[str, list]:
+    async def _get_directory_tree(self, client: "VaultClient", path: str) -> dict[str, list]:
         """
         Recursively build directory tree and collect files.
 
@@ -382,9 +389,7 @@ class VaultCache:
 
         return index
 
-    def _resolve_link(
-        self, link: str, name_to_path: dict[str, str]
-    ) -> str | None:
+    def _resolve_link(self, link: str, name_to_path: dict[str, str]) -> str | None:
         """
         Resolve a wikilink to a full path.
 
