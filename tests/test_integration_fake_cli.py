@@ -713,6 +713,12 @@ async def test_real_server_against_real_cli(monkeypatch: pytest.MonkeyPatch):
                 "type": "NoteNotFoundError",
                 "message": f"Note not found: {missing_path}",
             }
+            # Remove the probes the same way a client would, so Obsidian's own
+            # index stays consistent; the unlink below is only a safety net.
+            for rel in (target_rel, sibling_rel):
+                deleted = _tool_json(await session.call_tool("delete_note", {"path": rel}))
+                assert deleted["success"] is True, deleted
+                assert not (vault_path / rel).exists()
         finally:
             (vault_path / target_rel).unlink(missing_ok=True)
             (vault_path / sibling_rel).unlink(missing_ok=True)
