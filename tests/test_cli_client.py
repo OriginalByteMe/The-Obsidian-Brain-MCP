@@ -9,7 +9,6 @@ import pytest
 
 from obsidian_brain.cli_client import (
     ObsidianCLIClient,
-    _check_obsidian_running,
     find_cli_binary,
 )
 from obsidian_brain.exceptions import (
@@ -34,21 +33,6 @@ def _make_mock_process(stdout: str = "", stderr: str = "", returncode: int = 0):
     proc.returncode = returncode
     proc.kill = MagicMock()
     return proc
-
-
-# ---------------------------------------------------------------------------
-# Auto-patch: skip Obsidian-running check in all tests
-# ---------------------------------------------------------------------------
-
-
-@pytest.fixture(autouse=True)
-def _skip_obsidian_running_check(monkeypatch):
-    """Bypass the pre-flight check that requires a running Obsidian instance."""
-    monkeypatch.setattr("obsidian_brain.cli_client._obsidian_running_until", 0.0)
-    monkeypatch.setattr(
-        "obsidian_brain.cli_client._check_obsidian_running",
-        AsyncMock(),
-    )
 
 
 @pytest.fixture
@@ -125,94 +109,6 @@ class TestFindCliBinary:
 
 
 # ---------------------------------------------------------------------------
-# Obsidian running preflight
-# ---------------------------------------------------------------------------
-
-
-class TestObsidianRunningPreflight:
-    @pytest.mark.asyncio
-    async def test_repeated_cli_calls_detect_once_within_ttl(self):
-        running = _make_mock_process(stdout="123\n")
-        cli_call = _make_mock_process(stdout="ok")
-        client = ObsidianCLIClient(cli_path="/usr/bin/obsidian")
-
-        with (
-            patch(
-                "obsidian_brain.cli_client._check_obsidian_running",
-                new=_check_obsidian_running,
-            ),
-            patch("obsidian_brain.cli_client._clock", return_value=100.0),
-            patch(
-                "obsidian_brain.cli_client.asyncio.create_subprocess_exec",
-                side_effect=[running, cli_call, cli_call],
-            ) as mock_exec,
-        ):
-            await client._run("version")
-            await client._run("version")
-
-        assert mock_exec.call_count == 3
-        assert [call.args[0] for call in mock_exec.call_args_list].count("pgrep") == 1
-
-    @pytest.mark.asyncio
-    async def test_expired_detection_is_rechecked(self):
-        now = 100.0
-        running = _make_mock_process(stdout="123\n")
-
-        with (
-            patch("obsidian_brain.cli_client._clock", side_effect=lambda: now),
-            patch(
-                "obsidian_brain.cli_client.asyncio.create_subprocess_exec",
-                return_value=running,
-            ) as mock_exec,
-        ):
-            await _check_obsidian_running()
-            now = 105.0
-            await _check_obsidian_running()
-
-        assert mock_exec.call_count == 2
-
-    @pytest.mark.asyncio
-    async def test_negative_detection_is_not_cached(self):
-        stopped = _make_mock_process(returncode=1)
-
-        with patch(
-            "obsidian_brain.cli_client.asyncio.create_subprocess_exec",
-            return_value=stopped,
-        ) as mock_exec:
-            with pytest.raises(ObsidianNotRunningError):
-                await _check_obsidian_running()
-            with pytest.raises(ObsidianNotRunningError):
-                await _check_obsidian_running()
-
-        assert mock_exec.call_count == 2
-
-    @pytest.mark.asyncio
-    async def test_missing_pgrep_skips_without_caching(self):
-        with patch(
-            "obsidian_brain.cli_client.asyncio.create_subprocess_exec",
-            side_effect=FileNotFoundError,
-        ) as mock_exec:
-            await _check_obsidian_running()
-            await _check_obsidian_running()
-
-        assert mock_exec.call_count == 2
-
-    @pytest.mark.asyncio
-    async def test_hung_pgrep_skips_without_caching(self):
-        hung = _make_mock_process()
-        hung.communicate = AsyncMock(side_effect=asyncio.TimeoutError)
-
-        with patch(
-            "obsidian_brain.cli_client.asyncio.create_subprocess_exec",
-            return_value=hung,
-        ) as mock_exec:
-            await _check_obsidian_running()
-            await _check_obsidian_running()
-
-        assert mock_exec.call_count == 2
-
-
-# ---------------------------------------------------------------------------
 # _run method
 # ---------------------------------------------------------------------------
 
@@ -266,6 +162,182 @@ class TestRunMethod:
             call_args = mock_exec.call_args[0]
             assert call_args[0] == "/usr/bin/obsidian"
             assert "read" in call_args
+
+
+# ---------------------------------------------------------------------------
+# Registered-CLI failure modes (empirically observed against Obsidian 1.12.7)
+# ---------------------------------------------------------------------------
+
+
+class TestRegisteredCliFailureModes:
+    """Pin the four failure shapes proven against the real registered CLI."""
+
+    @pytest.fixture
+    def client(self):
+        return ObsidianCLIClient(cli_path="/usr/bin/obsidian")
+
+    @pytest.mark.asyncio
+    async def test_cli_disabled_sentinel_raises_for_data_command(self, client):
+        """The disabled sentinel must not leak through as note content."""
+        proc = _make_mock_process(
+            stdout=(
+                "Command line interface is not enabled. "
+                "Please turn it on in Settings > General > Advanced."
+            )
+        )
+        with patch("obsidian_brain.cli_client.asyncio.create_subprocess_exec", return_value=proc):
+            with pytest.raises(ObsidianCLIError) as exc_info:
+                await client._run("read", "path=Note.md")
+        assert exc_info.value.stderr == (
+            "Obsidian's command line interface is disabled. Enable it in Obsidian: "
+            'Settings > General > Advanced > "Command line interface".'
+        )
+
+    @pytest.mark.asyncio
+    async def test_cli_disabled_sentinel_raises_for_non_data_command(self, client):
+        """Applies unconditionally, not just to data commands."""
+        proc = _make_mock_process(
+            stdout=(
+                "Command line interface is not enabled. "
+                "Please turn it on in Settings > General > Advanced."
+            )
+        )
+        with patch("obsidian_brain.cli_client.asyncio.create_subprocess_exec", return_value=proc):
+            with pytest.raises(ObsidianCLIError) as exc_info:
+                await client._run("create", "path=Note.md", "content=x")
+        assert "Settings > General > Advanced" in exc_info.value.stderr
+        assert "enable" in exc_info.value.stderr.lower()
+
+    @pytest.mark.asyncio
+    async def test_vault_not_found_raises_actionable_error_for_data_command(self, client):
+        proc = _make_mock_process(stdout="Vault not found.")
+        with patch("obsidian_brain.cli_client.asyncio.create_subprocess_exec", return_value=proc):
+            with pytest.raises(ObsidianCLIError) as exc_info:
+                await client._run("read", "path=Note.md")
+        assert exc_info.value.stderr == (
+            "Vault not found. Set OBSIDIAN_VAULT to a vault name or id from "
+            "~/.config/obsidian/obsidian.json, or open the target vault in Obsidian."
+        )
+
+    @pytest.mark.asyncio
+    async def test_command_not_found_did_you_mean_variant_raises_for_invoked_command(self, client):
+        proc = _make_mock_process(
+            stdout='Error: Command "files" not found. Did you mean: links, bases?'
+        )
+        with (
+            patch("obsidian_brain.cli_client.asyncio.create_subprocess_exec", return_value=proc),
+            patch("obsidian_brain.cli_client.asyncio.sleep"),
+        ):
+            with pytest.raises(ObsidianCLIError) as exc_info:
+                await client._run("files")
+        assert (
+            exc_info.value.stderr == 'Error: Command "files" not found. Did you mean: links, bases?'
+        )
+
+    @pytest.mark.asyncio
+    async def test_command_not_found_plugin_variant_raises_for_invoked_command(self, client):
+        proc = _make_mock_process(
+            stdout='Error: Command "bogus:cmd" not found. It may require a plugin to be enabled.'
+        )
+        with (
+            patch("obsidian_brain.cli_client.asyncio.create_subprocess_exec", return_value=proc),
+            patch("obsidian_brain.cli_client.asyncio.sleep"),
+        ):
+            with pytest.raises(ObsidianCLIError) as exc_info:
+                await client._run("bogus:cmd")
+        assert (
+            exc_info.value.stderr
+            == 'Error: Command "bogus:cmd" not found. It may require a plugin to be enabled.'
+        )
+
+    @pytest.mark.asyncio
+    async def test_command_not_found_for_a_different_command_is_data_not_a_failure(self, client):
+        """The whole point of the command-equality check: a note body that merely
+        LOOKS like a command-not-found error for some OTHER command must come
+        back as data, not get misclassified as a CLI failure."""
+        body = 'Error: Command "something-else" not found. It may require a plugin to be enabled.'
+        proc = _make_mock_process(stdout=body)
+        with patch("obsidian_brain.cli_client.asyncio.create_subprocess_exec", return_value=proc):
+            result = await client._run("read", "path=Note.md")
+        assert result == body
+
+    @pytest.mark.asyncio
+    async def test_multiline_generic_error_raises_for_non_data_command(self, client):
+        stdout = (
+            "Error: Missing required parameter: query=<text>\n"
+            "Usage: search query=<text> [path=<folder>] [format=json|text]"
+        )
+        proc = _make_mock_process(stdout=stdout)
+        with patch("obsidian_brain.cli_client.asyncio.create_subprocess_exec", return_value=proc):
+            with pytest.raises(ObsidianCLIError) as exc_info:
+                await client._run("create", "path=Note.md")
+        assert exc_info.value.stderr == stdout
+
+    @pytest.mark.asyncio
+    async def test_multiline_generic_error_is_exempt_for_data_command(self, client):
+        """Data commands stay exempt from the generic rule even multi-line."""
+        stdout = (
+            "Error: Missing required parameter: query=<text>\n"
+            "Usage: search query=<text> [path=<folder>] [format=json|text]"
+        )
+        proc = _make_mock_process(stdout=stdout)
+        with patch("obsidian_brain.cli_client.asyncio.create_subprocess_exec", return_value=proc):
+            result = await client._run("search", "query=")
+        assert result == stdout
+
+    @pytest.mark.asyncio
+    async def test_cli_not_running_stderr_raises_obsidian_not_running(self, client):
+        proc = _make_mock_process(
+            stderr=(
+                "The CLI is unable to find Obsidian. "
+                "Please make sure Obsidian is running and try again."
+            ),
+            returncode=1,
+        )
+        with patch(
+            "obsidian_brain.cli_client.asyncio.create_subprocess_exec", return_value=proc
+        ) as mock_exec:
+            with pytest.raises(ObsidianNotRunningError):
+                await client._run("version")
+        assert mock_exec.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_cold_vault_open_race_retries_once_and_succeeds(self, client):
+        """First call loses the async-handler-registration race; the retry succeeds."""
+        losing = _make_mock_process(
+            stdout='Error: Command "files" not found. Did you mean: links, bases?'
+        )
+        winning = _make_mock_process(stdout="Note.md\nOther.md")
+        with (
+            patch(
+                "obsidian_brain.cli_client.asyncio.create_subprocess_exec",
+                side_effect=[losing, winning],
+            ) as mock_exec,
+            patch("obsidian_brain.cli_client.asyncio.sleep") as mock_sleep,
+        ):
+            result = await client._run("files")
+
+        assert result == "Note.md\nOther.md"
+        assert mock_exec.call_count == 2
+        mock_sleep.assert_awaited_once_with(0.75)
+
+    @pytest.mark.asyncio
+    async def test_cold_vault_open_race_gives_up_after_one_retry(self, client):
+        """Bounded to a single retry -- two losses in a row still raise."""
+        losing = _make_mock_process(
+            stdout='Error: Command "files" not found. Did you mean: links, bases?'
+        )
+        with (
+            patch(
+                "obsidian_brain.cli_client.asyncio.create_subprocess_exec",
+                side_effect=[losing, losing],
+            ) as mock_exec,
+            patch("obsidian_brain.cli_client.asyncio.sleep"),
+        ):
+            with pytest.raises(ObsidianCLIError):
+                await client._run("files")
+
+        assert mock_exec.call_count == 2
 
 
 # ---------------------------------------------------------------------------
@@ -668,11 +740,13 @@ class TestExecutableCLIContract:
 
     @pytest.mark.asyncio
     async def test_unknown_command_stdout_message_raises_cli_error(self, fake_cli, monkeypatch):
+        """A genuinely unknown command still fails, after the one bounded retry."""
         executable, _calls = fake_cli
         monkeypatch.setenv(
             "FAKE_OBSIDIAN_STDOUT",
             'Error: Command "bogus:cmd" not found. It may require a plugin to be enabled.\n',
         )
+        monkeypatch.setattr("obsidian_brain.cli_client.asyncio.sleep", AsyncMock())
         client = ObsidianCLIClient(cli_path=executable)
 
         with pytest.raises(ObsidianCLIError) as exc_info:

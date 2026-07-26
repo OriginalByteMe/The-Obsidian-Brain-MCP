@@ -7,6 +7,7 @@ app when one is available (see ``test_real_server_against_real_cli``).
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import subprocess
@@ -39,9 +40,25 @@ def _install_fake_cli(tmp_path: Path) -> Path:
         f"#!{sys.executable}\n"
         + dedent(
             """\
+            import os
             import sys
             from datetime import date
             from pathlib import Path
+
+            if os.environ.get("FAKE_OBSIDIAN_DISABLED") == "1":
+                print(
+                    "Command line interface is not enabled. "
+                    "Please turn it on in Settings > General > Advanced."
+                )
+                raise SystemExit(0)
+
+            if os.environ.get("FAKE_OBSIDIAN_DOWN") == "1":
+                print(
+                    "The CLI is unable to find Obsidian. "
+                    "Please make sure Obsidian is running and try again.",
+                    file=sys.stderr,
+                )
+                raise SystemExit(1)
 
             args = sys.argv[1:]
             vault_arg = next((arg for arg in args if arg.startswith("vault=")), None)
@@ -60,6 +77,14 @@ def _install_fake_cli(tmp_path: Path) -> Path:
                     params[key] = value
                 else:
                     flags.add(arg)
+
+            cold_marker = os.environ.get("FAKE_OBSIDIAN_COLD_ONCE")
+            if cold_marker:
+                marker_path = Path(cold_marker)
+                if not marker_path.exists():
+                    marker_path.touch()
+                    print(f'Error: Command "{command}" not found. Did you mean: links, bases?')
+                    raise SystemExit(0)
 
             if not root.is_dir():
                 print("Vault not found.")
@@ -186,12 +211,17 @@ def _run_fake_cli(executable: Path, vault: Path, *args: str) -> subprocess.Compl
     )
 
 
-def _tool_json(result: CallToolResult) -> dict[str, Any]:
+def _tool_payload(result: CallToolResult) -> Any:
+    """Parse a tool's JSON text payload, whatever its top-level shape."""
     assert not result.isError
     assert result.content
     content = result.content[0]
     assert isinstance(content, TextContent)
-    parsed = json.loads(content.text)
+    return json.loads(content.text)
+
+
+def _tool_json(result: CallToolResult) -> dict[str, Any]:
+    parsed = _tool_payload(result)
     assert isinstance(parsed, dict)
     return parsed
 
@@ -393,11 +423,9 @@ async def test_real_server_against_fake_cli(tmp_path: Path, monkeypatch: pytest.
     monkeypatch.setenv("OBSIDIAN_CLI_PATH", str(executable))
     monkeypatch.setenv("OBSIDIAN_VAULT", str(vault))
 
-    import obsidian_brain.cli_client as cli_module
     from obsidian_brain.cache import vault_cache
     from obsidian_brain.server import client, mcp
 
-    monkeypatch.setattr(cli_module, "_check_obsidian_running", AsyncMock())
     monkeypatch.setattr(client, "cli_path", None)
     monkeypatch.setattr(client, "vault", str(vault))
     monkeypatch.setattr(vault_cache, "_structure", None)
@@ -517,6 +545,138 @@ async def test_real_server_against_fake_cli(tmp_path: Path, monkeypatch: pytest.
             "type": "NoteNotFoundError",
             "message": "Note not found: Missing.md",
         }
+
+
+@pytest.mark.asyncio
+async def test_real_server_reports_cli_disabled_as_error_not_data(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """FAKE_OBSIDIAN_DISABLED=1 reproduces the CLI-toggle-off sentinel Obsidian
+    prints for every command. Every tool must surface it as a JSON error --
+    never as a note's content, a file list, or a search match, which was the
+    actual regression: the sentinel silently returned as if it were data.
+    """
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    (vault / "Real.md").write_text("# Real\n\nneedle\n", encoding="utf-8")
+
+    executable = _install_fake_cli(tmp_path)
+    monkeypatch.setenv("OBSIDIAN_CLI_PATH", str(executable))
+    monkeypatch.setenv("OBSIDIAN_VAULT", str(vault))
+    monkeypatch.setenv("FAKE_OBSIDIAN_DISABLED", "1")
+
+    from obsidian_brain.cache import vault_cache
+    from obsidian_brain.server import client, mcp
+
+    monkeypatch.setattr(client, "cli_path", None)
+    monkeypatch.setattr(client, "vault", str(vault))
+    monkeypatch.setattr(vault_cache, "_structure", None)
+    monkeypatch.setattr(vault_cache, "_file_paths", [], raising=False)
+    monkeypatch.setattr(vault_cache, "_backlink_index", {})
+
+    # The exact sentinel the real CLI prints when its toggle is off -- must
+    # never leak through as note/file/search data.
+    raw_disabled_sentinel = (
+        "Command line interface is not enabled. Please turn it on in Settings > General > Advanced."
+    )
+    actionable_message = (
+        "Obsidian's command line interface is disabled. Enable it in Obsidian: "
+        'Settings > General > Advanced > "Command line interface".'
+    )
+
+    async with create_connected_server_and_client_session(mcp) as session:
+        note = _tool_json(await session.call_tool("get_note", {"path": "Real.md"}))
+        assert note.get("error") is True, note
+        assert note["type"] == "ObsidianCLIError"
+        assert actionable_message in note["message"]
+        assert "content" not in note
+        assert raw_disabled_sentinel not in json.dumps(note)
+
+        files = _tool_payload(await session.call_tool("list_vault_files", {}))
+        assert isinstance(files, dict), f"expected an error object, got a file list: {files!r}"
+        assert files.get("error") is True, files
+        assert files["type"] == "ObsidianCLIError"
+        assert actionable_message in files["message"]
+        assert raw_disabled_sentinel not in json.dumps(files)
+
+        search = _tool_json(await session.call_tool("search_content", {"query": "needle"}))
+        assert search.get("error") is True, search
+        assert search["type"] == "ObsidianCLIError"
+        assert actionable_message in search["message"]
+        assert "results" not in search
+        assert raw_disabled_sentinel not in json.dumps(search)
+
+
+@pytest.mark.asyncio
+async def test_real_server_reports_obsidian_not_running(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """FAKE_OBSIDIAN_DOWN=1 reproduces the CLI's own rc=1 + stderr failure when
+    Obsidian isn't running. The client must turn that into
+    ObsidianNotRunningError -- not hang, and not raise ObsidianCLIError.
+    """
+    vault = tmp_path / "vault"
+    vault.mkdir()
+
+    executable = _install_fake_cli(tmp_path)
+    monkeypatch.setenv("OBSIDIAN_CLI_PATH", str(executable))
+    monkeypatch.setenv("OBSIDIAN_VAULT", str(vault))
+    monkeypatch.setenv("FAKE_OBSIDIAN_DOWN", "1")
+
+    from obsidian_brain.cache import vault_cache
+    from obsidian_brain.exceptions import ObsidianNotRunningError
+    from obsidian_brain.server import client, mcp
+
+    monkeypatch.setattr(client, "cli_path", None)
+    monkeypatch.setattr(client, "vault", str(vault))
+    monkeypatch.setattr(vault_cache, "_structure", None)
+    monkeypatch.setattr(vault_cache, "_file_paths", [], raising=False)
+    monkeypatch.setattr(vault_cache, "_backlink_index", {})
+
+    async with create_connected_server_and_client_session(mcp) as session:
+        payload = _tool_json(await session.call_tool("list_vault_files", {}))
+        assert payload == {
+            "error": True,
+            "type": "ObsidianNotRunningError",
+            "message": str(ObsidianNotRunningError()),
+        }
+
+
+@pytest.mark.asyncio
+async def test_real_server_retries_once_through_cold_vault_race(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """FAKE_OBSIDIAN_COLD_ONCE reproduces the cold-vault-open race: the very
+    first CLI invocation loses the race and reports the command it was
+    actually given as "not found". The client's single transparent retry
+    must paper over it end to end, so the tool call succeeds.
+    """
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    (vault / "Root.md").write_text("root", encoding="utf-8")
+
+    executable = _install_fake_cli(tmp_path)
+    marker = tmp_path / "cold-once.marker"
+    monkeypatch.setenv("OBSIDIAN_CLI_PATH", str(executable))
+    monkeypatch.setenv("OBSIDIAN_VAULT", str(vault))
+    monkeypatch.setenv("FAKE_OBSIDIAN_COLD_ONCE", str(marker))
+    monkeypatch.setattr(asyncio, "sleep", AsyncMock())
+
+    from obsidian_brain.cache import vault_cache
+    from obsidian_brain.server import client, mcp
+
+    monkeypatch.setattr(client, "cli_path", None)
+    monkeypatch.setattr(client, "vault", str(vault))
+    monkeypatch.setattr(vault_cache, "_structure", None)
+    monkeypatch.setattr(vault_cache, "_file_paths", [], raising=False)
+    monkeypatch.setattr(vault_cache, "_backlink_index", {})
+
+    assert not marker.exists()
+
+    async with create_connected_server_and_client_session(mcp) as session:
+        files = _tool_payload(await session.call_tool("list_vault_files", {}))
+        assert files == [{"name": "Root.md", "type": "file"}]
+        assert marker.exists()  # the first, losing attempt really ran
 
 
 # ---------------------------------------------------------------------------
@@ -641,14 +801,9 @@ async def test_real_server_against_real_cli(monkeypatch: pytest.MonkeyPatch):
     assert vault_path is not None
     assert (vault_path / _DISPOSABLE_SENTINEL).is_file()
 
-    import obsidian_brain.cli_client as cli_module
     from obsidian_brain.cache import vault_cache
     from obsidian_brain.server import client, mcp
 
-    # The socket's presence already proves a live instance is listening; skip
-    # the pgrep-based heuristic so an environment-specific process-name
-    # mismatch can't make this opt-in test flaky.
-    monkeypatch.setattr(cli_module, "_check_obsidian_running", AsyncMock())
     monkeypatch.setattr(client, "cli_path", binary)
     monkeypatch.setattr(client, "vault", vault_name)
     monkeypatch.setattr(vault_cache, "_structure", None)
