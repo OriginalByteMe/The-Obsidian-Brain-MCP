@@ -110,7 +110,7 @@ class MockObsidianClient:
         self.list_directory = AsyncMock(
             return_value=[
                 {"name": "test.md", "type": "file"},
-                {"name": "folder", "type": "folder"},
+                {"name": "sub/nested.md", "type": "file"},
             ]
         )
         self.get_note = AsyncMock(
@@ -121,7 +121,7 @@ class MockObsidianClient:
                 "modified": "2024-01-15T10:30:00Z",
             }
         )
-        self.create_note = AsyncMock()
+        self.create_note = AsyncMock(side_effect=lambda path, content: path)
         self.update_note = AsyncMock()
         self.append_to_note = AsyncMock()
         self.patch_note = AsyncMock()
@@ -317,6 +317,25 @@ class TestVaultToolShapes:
         assert isinstance(result, str)
         data = json.loads(result)
         assert_matches_shape(data, FROZEN_SHAPES["create_note"])
+
+    @pytest.mark.asyncio
+    async def test_create_note_dedupe_shape(self, mock_server, mock_client, mock_cache):
+        """When Obsidian dedupes an existing path, the shape must still hold
+        and the response must report the actual (deduped) path, not the
+        requested one."""
+        mock_client.create_note = AsyncMock(return_value="Note 1.md")
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr("obsidian_brain.tools.vault.vault_cache", mock_cache)
+            result = await mock_server.tools["create_note"](
+                path="Note.md", content="Hello", tags=[], backlinks=[]
+            )
+        assert isinstance(result, str)
+        data = json.loads(result)
+        assert_matches_shape(data, FROZEN_SHAPES["create_note"])
+        assert data["path"] == "Note 1.md"
+        assert "already existed" in data["message"]
+        assert "deduped" in data["message"].lower()
+        mock_cache.sync_note.assert_awaited_once_with(mock_client, "Note 1.md")
 
     @pytest.mark.asyncio
     async def test_update_note_shape(self, mock_server, mock_client):

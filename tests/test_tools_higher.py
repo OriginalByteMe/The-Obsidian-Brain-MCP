@@ -40,7 +40,7 @@ class MockVaultClient:
     async def note_exists(self, path: str) -> bool:
         return path in self._notes
 
-    async def create_note(self, path: str, content: str) -> None:
+    async def create_note(self, path: str, content: str) -> str:
         self.created_notes[path] = content
         self._notes[path] = {
             "content": content,
@@ -49,6 +49,7 @@ class MockVaultClient:
         }
         if path not in self._files:
             self._files.append(path)
+        return path
 
     async def update_note(self, path: str, content: str) -> None:
         await self.create_note(path, content)

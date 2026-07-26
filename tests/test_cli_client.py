@@ -308,22 +308,20 @@ class TestVaultClientMethods:
 
     @pytest.mark.asyncio
     async def test_note_exists_false(self, client):
-        """Should return False when note doesn't exist."""
-        proc = _make_mock_process(
-            stderr="Error: ENOENT: no such file or directory, open '/vault/missing.md'",
-            returncode=1,
-        )
+        """Should return False when the CLI reports the note missing on stdout."""
+        proc = _make_mock_process(stdout='Error: File "missing.md" not found.')
         with patch("obsidian_brain.cli_client.asyncio.create_subprocess_exec", return_value=proc):
             assert await client.note_exists("missing.md") is False
 
     @pytest.mark.asyncio
     async def test_create_note(self, client):
-        """Should target the exact vault-relative path."""
-        proc = _make_mock_process(stdout="")
+        """Should target the exact vault-relative path and return the parsed created path."""
+        proc = _make_mock_process(stdout="Created: folder/note 1.md\n")
         with patch(
             "obsidian_brain.cli_client.asyncio.create_subprocess_exec", return_value=proc
         ) as mock_exec:
-            await client.create_note("folder/note.md", "# Content")
+            result = await client.create_note("folder/note.md", "# Content")
+            assert result == "folder/note 1.md"
             call_args = mock_exec.call_args[0]
             assert "path=folder/note.md" in call_args
             assert not any(arg.startswith("name=") for arg in call_args)
@@ -365,8 +363,8 @@ class TestVaultClientMethods:
 
     @pytest.mark.asyncio
     async def test_list_directory(self, client):
-        """Should call obsidian files with folder arg and parse plain text."""
-        # The CLI files command returns plain text, one entry per line
+        """Trailing slashes are no longer folder markers -- `files` never
+        actually emits them, so every entry is type "file" verbatim."""
         plain_output = "note.md\nsubfolder/\n"
         proc = _make_mock_process(stdout=plain_output)
         with patch(
@@ -375,7 +373,7 @@ class TestVaultClientMethods:
             result = await client.list_directory("Projects")
             assert len(result) == 2
             assert result[0] == {"name": "note.md", "type": "file"}
-            assert result[1] == {"name": "subfolder", "type": "folder"}
+            assert result[1] == {"name": "subfolder/", "type": "file"}
             call_args = mock_exec.call_args[0]
             assert "files" in call_args
 
@@ -509,25 +507,25 @@ class TestExecutableCLIContract:
             (
                 "create_note",
                 ("Projects/Nested/Note.md", "body"),
-                "",
+                "Created: Projects/Nested/Note.md\n",
                 ["create", "path=Projects/Nested/Note.md", "content=body"],
             ),
             (
                 "update_note",
                 ("Projects/Nested/Note.md", "body"),
-                "",
+                "Overwrote: Projects/Nested/Note.md\n",
                 ["create", "path=Projects/Nested/Note.md", "content=body", "overwrite"],
             ),
             (
                 "append_to_note",
                 ("Projects/Nested/Note.md", "body"),
-                "",
+                "Appended to: Projects/Nested/Note.md\n",
                 ["append", "path=Projects/Nested/Note.md", "content=body"],
             ),
             (
                 "delete_note",
                 ("Projects/Nested/Note.md",),
-                "",
+                "Moved to trash: Projects/Nested/Note.md\n",
                 ["delete", "path=Projects/Nested/Note.md"],
             ),
         ],
@@ -581,6 +579,20 @@ class TestExecutableCLIContract:
         assert note["content"] == "2026-03-08 12:03:00 This is note content\n"
 
     @pytest.mark.asyncio
+    async def test_read_filters_loaded_main_app_package_log_line(self, fake_cli, monkeypatch):
+        """The real CLI's startup line reads "Loaded main app package", not "updated"."""
+        executable, _calls = fake_cli
+        monkeypatch.setenv(
+            "FAKE_OBSIDIAN_STDOUT",
+            "2026-07-26 09:00:00 Loaded main app package /tmp/app.asar\n# Real content\n",
+        )
+        client = ObsidianCLIClient(cli_path=executable)
+
+        note = await client.get_note("Note.md")
+
+        assert note["content"] == "# Real content\n"
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize(
         "path",
         [
@@ -604,13 +616,30 @@ class TestExecutableCLIContract:
         assert not calls.exists()
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("method", "arguments"),
+        [
+            ("get_note", ("Missing.md",)),
+            ("append_to_note", ("Missing.md", "new text")),
+            ("delete_note", ("Missing.md",)),
+        ],
+    )
+    async def test_missing_note_stdout_message_raises_note_not_found(
+        self, fake_cli, monkeypatch, method, arguments
+    ):
+        """The real CLI reports a missing note on stdout with exit 0, never stderr/ENOENT."""
+        executable, _calls = fake_cli
+        monkeypatch.setenv("FAKE_OBSIDIAN_STDOUT", 'Error: File "Missing.md" not found.\n')
+        client = ObsidianCLIClient(cli_path=executable)
+
+        with pytest.raises(NoteNotFoundError) as exc_info:
+            await getattr(client, method)(*arguments)
+        assert exc_info.value.path == "Missing.md"
+
+    @pytest.mark.asyncio
     async def test_note_exists_only_swallows_missing_note_failures(self, fake_cli, monkeypatch):
         executable, _calls = fake_cli
-        monkeypatch.setenv("FAKE_OBSIDIAN_EXIT", "1")
-        monkeypatch.setenv(
-            "FAKE_OBSIDIAN_STDERR",
-            "Error: ENOENT: no such file or directory, open '/vault/Missing.md'",
-        )
+        monkeypatch.setenv("FAKE_OBSIDIAN_STDOUT", 'Error: File "Missing.md" not found.\n')
         client = ObsidianCLIClient(cli_path=executable)
 
         with pytest.raises(NoteNotFoundError) as exc_info:
@@ -620,53 +649,129 @@ class TestExecutableCLIContract:
         assert await client.note_exists("Missing.md") is False
 
     @pytest.mark.asyncio
-    async def test_vault_not_found_is_not_misclassified_as_a_missing_note(
+    async def test_vault_not_found_stdout_is_not_misclassified_as_a_missing_note(
         self, fake_cli, monkeypatch
     ):
         executable, _calls = fake_cli
-        monkeypatch.setenv("FAKE_OBSIDIAN_EXIT", "1")
-        monkeypatch.setenv("FAKE_OBSIDIAN_STDERR", "Vault not found: Work")
-        client = ObsidianCLIClient(cli_path=executable)
+        monkeypatch.setenv("FAKE_OBSIDIAN_STDOUT", "Vault not found.\n")
+        client = ObsidianCLIClient(cli_path=executable, vault="Work")
 
         with pytest.raises(ObsidianCLIError) as exc_info:
             await client.get_note("Note.md")
         assert type(exc_info.value) is ObsidianCLIError
+        assert "Work" in str(exc_info.value)
 
         with pytest.raises(ObsidianCLIError) as exc_info:
             await client.note_exists("Note.md")
         assert type(exc_info.value) is ObsidianCLIError
 
     @pytest.mark.asyncio
-    async def test_enoent_for_a_different_file_is_not_a_missing_note(self, fake_cli, monkeypatch):
+    async def test_unknown_command_raises_but_no_matches_found_is_not_an_error(
+        self, fake_cli, monkeypatch
+    ):
+        """An unrecognized command's Error: line raises, but a `No matches
+        found.` search result is not an error -- both are whole-output
+        stdout messages; only one starts with `Error: `."""
         executable, _calls = fake_cli
-        monkeypatch.setenv("FAKE_OBSIDIAN_EXIT", "1")
-        monkeypatch.setenv(
-            "FAKE_OBSIDIAN_STDERR",
-            "Error: ENOENT: no such file or directory, open '/vault/other-note.md'",
-        )
         client = ObsidianCLIClient(cli_path=executable)
 
+        monkeypatch.setenv(
+            "FAKE_OBSIDIAN_STDOUT",
+            'Error: Command "bogus:cmd" not found. It may require a plugin to be enabled.\n',
+        )
         with pytest.raises(ObsidianCLIError) as exc_info:
-            await client.get_note("note.md")
-
+            await client._run("bogus:cmd")
         assert type(exc_info.value) is ObsidianCLIError
 
+        monkeypatch.setenv("FAKE_OBSIDIAN_STDOUT", "No matches found.\n")
+        assert await client.search_simple("nothing") == []
+
     @pytest.mark.asyncio
-    async def test_create_enoent_is_not_misclassified_as_a_missing_note(
+    async def test_note_not_found_match_requires_the_whole_output_not_a_substring(
+        self, fake_cli, monkeypatch
+    ):
+        """Only a whole-line stdout match is a real failure -- a note that
+        merely mentions the phrase inside a larger body must read normally."""
+        executable, _calls = fake_cli
+        client = ObsidianCLIClient(cli_path=executable)
+
+        monkeypatch.setenv("FAKE_OBSIDIAN_STDOUT", 'Error: File "missing.md" not found.\n')
+        with pytest.raises(NoteNotFoundError):
+            await client.get_note("missing.md")
+
+        monkeypatch.setenv(
+            "FAKE_OBSIDIAN_STDOUT",
+            "# Log\n"
+            'Yesterday I saw: Error: File "missing.md" not found.\n'
+            "That was resolved by re-syncing.\n",
+        )
+        note = await client.get_note("missing.md")
+        assert 'Error: File "missing.md" not found.' in note["content"]
+
+    @pytest.mark.asyncio
+    async def test_create_note_returns_created_path(self, fake_cli, monkeypatch):
+        """The parsed Created: path is returned, distinct from the requested path."""
+        executable, _calls = fake_cli
+        monkeypatch.setenv("FAKE_OBSIDIAN_STDOUT", "Created: Actual/Note.md\n")
+        client = ObsidianCLIClient(cli_path=executable)
+
+        result = await client.create_note("Note.md", "body")
+
+        assert result == "Actual/Note.md"
+
+    @pytest.mark.asyncio
+    async def test_create_note_dedupe_returns_the_actual_created_path(self, fake_cli, monkeypatch):
+        """Obsidian dedupes an existing target instead of failing or overwriting it."""
+        executable, _calls = fake_cli
+        monkeypatch.setenv("FAKE_OBSIDIAN_STDOUT", "Created: Note 1.md\n")
+        client = ObsidianCLIClient(cli_path=executable)
+
+        result = await client.create_note("Note.md", "body")
+
+        assert result == "Note 1.md"
+
+    @pytest.mark.asyncio
+    async def test_create_note_parses_overwrote_line_too(self, fake_cli, monkeypatch):
+        """create_note's parser recognizes Overwrote: as well as Created:."""
+        executable, _calls = fake_cli
+        monkeypatch.setenv("FAKE_OBSIDIAN_STDOUT", "Overwrote: Actual/Note.md\n")
+        client = ObsidianCLIClient(cli_path=executable)
+
+        result = await client.create_note("Note.md", "body")
+
+        assert result == "Actual/Note.md"
+
+    @pytest.mark.asyncio
+    async def test_create_note_falls_back_to_requested_path_without_a_created_line(
         self, fake_cli, monkeypatch
     ):
         executable, _calls = fake_cli
-        monkeypatch.setenv("FAKE_OBSIDIAN_EXIT", "1")
-        monkeypatch.setenv(
-            "FAKE_OBSIDIAN_STDERR",
-            "Error: ENOENT: no such file or directory, open '/vault/Missing/Note.md'",
-        )
+        monkeypatch.setenv("FAKE_OBSIDIAN_STDOUT", "")
         client = ObsidianCLIClient(cli_path=executable)
 
-        with pytest.raises(ObsidianCLIError) as exc_info:
-            await client.create_note("Missing/Note.md", "body")
+        result = await client.create_note("Note.md", "body")
 
-        assert type(exc_info.value) is ObsidianCLIError
+        assert result == "Note.md"
+
+    @pytest.mark.asyncio
+    async def test_stderr_text_raises_even_at_exit_zero_and_nonzero_exit_still_raises(
+        self, fake_cli, monkeypatch
+    ):
+        """Belt-and-braces: non-empty stderr still raises even at exit 0 (for
+        other CLI builds), and a genuine non-zero exit still raises as before."""
+        executable, _calls = fake_cli
+        client = ObsidianCLIClient(cli_path=executable)
+
+        monkeypatch.setenv("FAKE_OBSIDIAN_STDERR", "unexpected warning")
+        with pytest.raises(ObsidianCLIError) as exc_info:
+            await client.get_note("Note.md")
+        assert exc_info.value.returncode == 0
+
+        monkeypatch.setenv("FAKE_OBSIDIAN_STDERR", "")
+        monkeypatch.setenv("FAKE_OBSIDIAN_EXIT", "1")
+        with pytest.raises(ObsidianCLIError) as exc_info:
+            await client.get_note("Note.md")
+        assert exc_info.value.returncode == 1
 
 
 # ---------------------------------------------------------------------------

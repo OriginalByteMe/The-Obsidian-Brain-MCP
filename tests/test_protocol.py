@@ -94,3 +94,8 @@ class TestVaultClientProtocol:
         sig = inspect.signature(VaultClient.get_daily_note)
         params = list(sig.parameters.keys())
         assert "date" in params
+
+    def test_create_note_returns_str(self):
+        """create_note must be retyped to return the actual created path (Obsidian dedupes)."""
+        sig = inspect.signature(VaultClient.create_note)
+        assert sig.return_annotation is str

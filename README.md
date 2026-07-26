@@ -335,6 +335,11 @@ obsidian-brain
 
 The server discovers the CLI lazily. Set `OBSIDIAN_CLI_PATH` only for a non-standard executable location. Set `OBSIDIAN_VAULT` when the CLI should target a specific vault; otherwise Obsidian's default/active vault is used.
 
+> **Note:** The Obsidian CLI always exits 0 and never writes to stderr, even
+> on failure -- it reports errors as plain text on stdout (e.g.
+> `Error: File "Note.md" not found.`). This server classifies failures by
+> parsing that stdout text rather than relying on the exit code.
+
 Onboarding writes its vault profile to the visible `Obsidian Brain/config.yml` path.
 
 ---
@@ -362,7 +367,7 @@ MCP resource discovery and reads are what this server can guarantee. An IDE's `@
 
 | Tool | Description |
 |------|-------------|
-| `list_vault_files` | List files and folders at any path |
+| `list_vault_files` | List files at any path, recursively (the CLI never returns folders) |
 | `get_note` | Read note content, tags, links, and frontmatter |
 | `create_note` | Create notes with tags and validated backlinks |
 | `update_note` | Replace note content entirely |

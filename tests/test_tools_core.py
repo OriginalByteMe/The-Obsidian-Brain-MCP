@@ -29,7 +29,7 @@ class MockVaultClient:
         self.list_directory = AsyncMock(
             return_value=[
                 {"name": "note1.md", "type": "file"},
-                {"name": "folder1", "type": "folder"},
+                {"name": "sub/note2.md", "type": "file"},
             ]
         )
         self.get_all_files = AsyncMock(return_value=["note1.md", "folder1/note2.md"])
@@ -42,7 +42,7 @@ class MockVaultClient:
             }
         )
         self.note_exists = AsyncMock(return_value=True)
-        self.create_note = AsyncMock()
+        self.create_note = AsyncMock(side_effect=lambda path, content: path)
         self.update_note = AsyncMock()
         self.append_to_note = AsyncMock()
         self.delete_note = AsyncMock()
@@ -341,6 +341,52 @@ class TestVaultTools:
         data = _load_tool_result(result)
         assert isinstance(data, list)
         assert len(data) == 2
+        # The Obsidian CLI never returns folders -- every entry is a file,
+        # regardless of what the (possibly stale) client reports.
+        assert all(entry["type"] == "file" for entry in data)
+
+    @pytest.mark.anyio
+    async def test_list_vault_files_normalizes_stale_folder_type(self, setup):
+        """The real CLI never returns folders; a stale client that still
+        tags an entry "folder" must be normalized to "file" in the response."""
+        server, client = setup
+        client.list_directory.return_value = [{"name": "Areas", "type": "folder"}]
+
+        result = await server.call_tool("list_vault_files", {"path": "/"})
+        data = _load_tool_result(result)
+
+        assert data == [{"name": "Areas", "type": "file"}]
+
+    @pytest.mark.anyio
+    async def test_create_note_reports_actual_deduped_path(self, setup, monkeypatch):
+        """Obsidian dedupes an existing target instead of overwriting it; the
+        response must report the actual created path, not the requested one."""
+        from obsidian_brain.tools import vault as vault_tools
+
+        server, client = setup
+        client.create_note = AsyncMock(return_value="Note 1.md")
+        synced: list[str] = []
+
+        async def record_sync(sync_client, path: str) -> None:
+            assert sync_client is client
+            synced.append(path)
+
+        monkeypatch.setattr(vault_tools, "vault_cache", SimpleNamespace(sync_note=record_sync))
+
+        result = await server.call_tool(
+            "create_note", {"path": "Note.md", "content": "Hello world"}
+        )
+        data = _load_tool_result(result)
+
+        assert data["success"] is True
+        assert data["path"] == "Note 1.md"
+        assert "Note.md" in data["message"]
+        assert "Note 1.md" in data["message"]
+        # The message must explicitly explain the dedupe, not just mention paths.
+        assert "already existed" in data["message"]
+        assert "deduped" in data["message"].lower()
+        # The cache must be synced for the note Obsidian actually wrote.
+        assert synced == ["Note 1.md"]
 
 
 class TestSearchTools:
