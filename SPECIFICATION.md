@@ -60,11 +60,15 @@ README.md
 
 ### Backend: Obsidian CLI
 
-All vault operations go through the `ObsidianCLIClient`, which implements the `VaultClient` Protocol. The CLI binary is located via `shutil.which("obsidian")` with an `OBSIDIAN_CLI_PATH` environment variable override; `OBSIDIAN_VAULT` optionally selects an exact vault name.
+All vault operations go through the `ObsidianCLIClient`, which implements the `VaultClient` Protocol. The CLI binary is located via `shutil.which("obsidian")` with an `OBSIDIAN_CLI_PATH` environment variable override; `OBSIDIAN_VAULT` optionally selects a vault by folder name or id.
+
+**CLI registration:** In Obsidian, open **Settings > General > Advanced**, turn **Command line interface** on, and accept the follow-up prompt to register it in your PATH. On Linux this copies Obsidian's bundled `obsidian-cli` to `~/.local/bin/obsidian` (mode 755); `~/.local/bin` must be on `PATH`. On Windows it appends the install directory to the user PATH; on macOS it links into `/usr/local/bin`. Verify with `obsidian version` (for example, `1.12.7 (installer 1.12.7)`).
+
+**Vault resolution:** The CLI checks, in order: (1) the `vault=` argument sent by this server when `OBSIDIAN_VAULT` is set; (2) the calling process's CWD if it is inside a registered vault; (3) the most recently focused open vault window; and (4) otherwise fails with `Vault not found.`. If `OBSIDIAN_VAULT` is unset, the vault must be open in Obsidian. Setting it to the vault's folder name is reliable, and Obsidian opens that vault's window on demand. A vault id from Obsidian's registry also works; see the README for the per-platform registry location.
 
 **Key design decisions:**
 - **No shell=True**: All subprocess calls use list-form arguments for safety
-- **Explicit timeouts**: Every CLI call has a timeout to prevent hangs
+- **Explicit timeouts**: Every CLI call has a timeout to bound subprocess lifetime
 - **Path sanitization**: Null byte rejection + structural safety from list-form exec
 - **Singleton client**: One `ObsidianCLIClient` instance shared across all tools
 
@@ -123,10 +127,10 @@ frontmatter is present). Frontmatter is parsed by the installed
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `OBSIDIAN_CLI_PATH` | No | auto-detected | Executable path when `obsidian` is not on `PATH` |
-| `OBSIDIAN_VAULT` | No | CLI default/active vault | Exact Obsidian vault name, not a filesystem path |
+| `OBSIDIAN_CLI_PATH` | No | auto-detected | Executable path when `obsidian` is not on `PATH`; set it to point at the binary explicitly |
+| `OBSIDIAN_VAULT` | No | see vault resolution above | Vault folder name or id (not a filesystem path), passed as the CLI's `vault=` argument |
 
-The Obsidian desktop app must be running with the CLI enabled under **Settings > General > Command line interface**. The `obsidian` executable must be available on `PATH` or specified with `OBSIDIAN_CLI_PATH`. Onboarding writes the vault profile to `Obsidian Brain/config.md` (fenced YAML in a Markdown note): the CLI's `create` command forces the `.md` extension and cannot write into dot-folders, so a `.yml` or `.obsidian-brain/` target can never exist.
+The registered CLI requires the Obsidian desktop app to be running. See the registration and vault-resolution rules above. Onboarding writes the vault profile to `Obsidian Brain/config.md` (fenced YAML in a Markdown note): the CLI's `create` command forces the `.md` extension and cannot write into dot-folders, so a `.yml` or `.obsidian-brain/` target can never exist.
 
 ---
 
@@ -197,13 +201,7 @@ class VaultCache:
 
 ### CLI Error Reporting
 
-The Obsidian CLI always exits 0 and never writes to stderr, even on
-failure -- it reports errors as plain text on stdout (e.g.
-`Error: File "Note.md" not found.`, `Vault not found.`). `ObsidianCLIClient._run`
-classifies failures by matching the CLI's whole trimmed stdout against known
-error lines (never a substring match, to avoid misfiring on note content that
-happens to contain the words "Error:"); a non-zero exit code or stderr text is
-still treated as a failure too, as a fallback for other CLI builds/versions.
+Application-level failures are reported as a line of STDOUT with exit code 0 (for example, `Vault not found.` or `Error: File "X" not found.`). The exception is the CLI binary failing to reach Obsidian: it exits 1 and writes `The CLI is unable to find Obsidian. Please make sure Obsidian is running and try again.` to STDERR. The server also classifies other non-zero exits or STDERR text as failures.
 
 ### Exception Hierarchy
 

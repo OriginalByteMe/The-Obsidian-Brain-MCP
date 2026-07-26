@@ -12,7 +12,6 @@ import asyncio
 import os
 import re
 import shutil
-import time
 from pathlib import PurePosixPath
 from typing import Any
 
@@ -33,20 +32,40 @@ from .parsers import (
 _OBSIDIAN_LOG_RE = re.compile(
     r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} Load(?:ed|ing) (?:main|updated) app package(?: .*)?$"
 )
-_OBSIDIAN_RUNNING_TTL = 5.0
-_clock = time.monotonic
-_obsidian_running_until = 0.0
 
-# The real Obsidian CLI always exits 0 and reports failures as a single
-# line of stdout instead of via returncode/stderr, so these classify it.
+# The real Obsidian CLI always exits 0 and reports failures as a single line
+# of stdout rather than via returncode/stderr -- _CLI_NOT_RUNNING_RE below is
+# the one exception, the CLI's own inability to reach Obsidian at all.
 _NOTE_NOT_FOUND_RE = re.compile(r'^Error: File "(?P<path>.+)" not found\.$')
 _VAULT_NOT_FOUND_RE = re.compile(r"^Vault not found\.$")
+_CLI_DISABLED_RE = re.compile(
+    r"^Command line interface is not enabled\. "
+    r"Please turn it on in Settings > General > Advanced\.$"
+)
+_COMMAND_NOT_FOUND_RE = re.compile(
+    r'^Error: Command "(?P<command>[^"]+)" not found\.'
+    r"(?: It may require a plugin to be enabled\.| Did you mean: [^\n]*)?$"
+)
 _GENERIC_ERROR_RE = re.compile(r"^Error: .+$")
 _CREATE_RESULT_RE = re.compile(r"^(?:Created|Overwrote): (?P<path>.+)$", re.MULTILINE)
 # Commands whose successful stdout is user data (note bodies, vault-relative
 # paths, search hits), where a line like "Error: …" may be the data itself.
 # Only the specific known failure shapes are classified for these.
 _DATA_COMMANDS = frozenset({"read", "daily:read", "files", "search:context", "search"})
+
+_CLI_DISABLED_MESSAGE = (
+    "Obsidian's command line interface is disabled. Enable it in Obsidian: "
+    'Settings > General > Advanced > "Command line interface".'
+)
+
+_VAULT_NOT_FOUND_MESSAGE = (
+    "Vault not found. Set OBSIDIAN_VAULT to a registered vault name or id, "
+    "or open the target vault in Obsidian."
+)
+
+# The CLI's own "cannot reach Obsidian at all" failure -- unlike every shape
+# above, reported via stderr with a non-zero exit code (see _run_once).
+_CLI_NOT_RUNNING_RE = re.compile(r"^The CLI is unable to find Obsidian\b.*$")
 
 
 def _classify_stdout_error(
@@ -58,6 +77,15 @@ def _classify_stdout_error(
     note's own content may legitimately contain text that looks like one
     of these messages, and only a whole-line match can tell that apart
     from a real CLI-reported failure.
+
+    Sentinel shapes the CLI can only ever emit as a failure -- disabled,
+    vault-not-found, and "command not found" for the command we actually
+    invoked -- are classified for every command, data commands included:
+    none of them can double as legitimate note/search/listing content.
+    The generic "Error: " rule stays exempt for data commands (whose
+    output can legitimately start with that text) and now matches only
+    the first line, so a multi-line "Error: ..." / "Usage: ..." payload
+    is still caught for non-data commands.
     """
     stripped = output.strip()
 
@@ -67,12 +95,27 @@ def _classify_stdout_error(
         if not_found.group("path") == target:
             return NoteNotFoundError(not_found.group("path"), command=command)
 
+    if _CLI_DISABLED_RE.match(stripped):
+        return ObsidianCLIError(returncode=0, stderr=_CLI_DISABLED_MESSAGE, command=command)
+
     if _VAULT_NOT_FOUND_RE.match(stripped):
+        return ObsidianCLIError(returncode=0, stderr=_VAULT_NOT_FOUND_MESSAGE, command=command)
+
+    # Deliberately classified even for data commands. The residual false
+    # positive -- a note whose ENTIRE body is this exact line, naming the very
+    # command being invoked -- is vanishingly rare and fails loudly. Deciding
+    # it by "the retry returned the same text" would not work: a slow vault
+    # boot repeats the payload too, and mistaking that for note content is the
+    # sentinel-served-as-data bug this rule exists to prevent.
+    command_not_found = _COMMAND_NOT_FOUND_RE.match(stripped)
+    if command_not_found and args and command_not_found.group("command") == args[0]:
         return ObsidianCLIError(returncode=0, stderr=stripped, command=command)
 
     # For data commands the whole output can legitimately be text starting with
-    # "Error: ", so only the specific shapes above classify there.
-    if args and args[0] not in _DATA_COMMANDS and _GENERIC_ERROR_RE.match(stripped):
+    # "Error: ", so only the specific shapes above classify there, and only the
+    # first line is checked so a multi-line note body isn't falsely matched.
+    first_line = stripped.split("\n", 1)[0]
+    if args and args[0] not in _DATA_COMMANDS and _GENERIC_ERROR_RE.match(first_line):
         return ObsidianCLIError(returncode=0, stderr=stripped, command=command)
 
     return None
@@ -122,40 +165,6 @@ def _validate_path(path: str, *, allow_root: bool = False) -> None:
         raise ValueError(f"Path must stay within the vault root: {path!r}")
 
 
-async def _check_obsidian_running() -> None:
-    """Verify that the Obsidian desktop app is running.
-
-    The Obsidian 1.12+ CLI communicates with a running instance via IPC.
-    Without a running instance, CLI commands launch a new Electron process
-    that hangs indefinitely waiting for GUI interaction.
-
-    Raises:
-        ObsidianNotRunningError: If no Obsidian process is detected.
-    """
-    global _obsidian_running_until
-
-    if _clock() < _obsidian_running_until:
-        return
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "pgrep",
-            "-f",
-            "obsidian.*app.asar",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5.0)
-        if proc.returncode != 0 or not stdout.strip():
-            raise ObsidianNotRunningError()
-        _obsidian_running_until = _clock() + _OBSIDIAN_RUNNING_TTL
-    except FileNotFoundError:
-        # pgrep not available -- skip check rather than block
-        pass
-    except asyncio.TimeoutError:
-        # pgrep itself hung -- skip check rather than block
-        pass
-
-
 def _filter_log_lines(output: str) -> str:
     """Remove known Obsidian startup lines without consuming note content."""
     lines = output.splitlines(keepends=True)
@@ -191,37 +200,13 @@ class ObsidianCLIClient:
         self.vault = vault if vault is not None else os.environ.get("OBSIDIAN_VAULT")
         self.timeout = timeout
 
-    async def _run(self, *args: str, timeout: float | None = None) -> str:
-        """Execute a CLI command and return stdout.
+    async def _run_once(
+        self, cmd: list[str], args: tuple[str, ...], effective_timeout: float
+    ) -> str:
+        """Launch one CLI subprocess, wait for it, and classify the result.
 
-        Args:
-            *args: CLI command arguments (e.g., "read", 'path="test.md"').
-            timeout: Override default timeout in seconds.
-
-        Returns:
-            Decoded stdout string.
-
-        Raises:
-            ObsidianCLIError: On non-zero exit, non-empty stderr, or a
-                recognized stdout error line -- the real CLI always exits 0
-                and reports failures as a line of stdout.
-            NoteNotFoundError: When stdout reports the targeted note missing.
+        Raises the same exceptions `_run` documents; the retry lives there.
         """
-        cli_path = self.cli_path
-        if cli_path is None:
-            cli_path = find_cli_binary()
-            self.cli_path = cli_path
-
-        # Without a running app, CLI commands launch Electron and hang.
-        await _check_obsidian_running()
-
-        cmd = [cli_path]
-        if self.vault:
-            cmd.append(f"vault={self.vault}")
-        cmd.extend(args)
-
-        effective_timeout = timeout if timeout is not None else self.timeout
-
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
@@ -229,7 +214,7 @@ class ObsidianCLIClient:
                 stderr=asyncio.subprocess.PIPE,
             )
         except FileNotFoundError as exc:
-            raise CLINotFoundError(searched_paths=f"cli_path={cli_path}") from exc
+            raise CLINotFoundError(searched_paths=f"cli_path={cmd[0]}") from exc
 
         try:
             stdout, stderr = await asyncio.wait_for(
@@ -242,6 +227,8 @@ class ObsidianCLIClient:
 
         stderr_text = stderr.decode().strip()
         if proc.returncode != 0 or stderr_text:
+            if _CLI_NOT_RUNNING_RE.match(stderr_text):
+                raise ObsidianNotRunningError()
             raise ObsidianCLIError(
                 returncode=proc.returncode,
                 stderr=stderr_text,
@@ -253,6 +240,55 @@ class ObsidianCLIClient:
         if error is not None:
             raise error
         return cleaned
+
+    async def _run(self, *args: str, timeout: float | None = None) -> str:
+        """Execute a CLI command and return stdout.
+
+        Retries once, after a short delay, if the CLI reports the command
+        we just invoked as "not found" -- see the comment below for why
+        that's a known race rather than a real failure.
+
+        Args:
+            *args: CLI command arguments (e.g., "read", 'path="test.md"').
+            timeout: Override default timeout in seconds.
+
+        Returns:
+            Decoded stdout string.
+
+        Raises:
+            ObsidianCLIError: On non-zero exit, unexpected stderr, or a
+                recognized stdout error line -- the CLI reports
+                application-level failures as a line of stdout with exit 0.
+            ObsidianNotRunningError: When the CLI reports it cannot reach a
+                running Obsidian instance at all.
+            NoteNotFoundError: When stdout reports the targeted note missing.
+        """
+        cli_path = self.cli_path
+        if cli_path is None:
+            cli_path = find_cli_binary()
+            self.cli_path = cli_path
+
+        cmd = [cli_path]
+        if self.vault:
+            cmd.append(f"vault={self.vault}")
+        cmd.extend(args)
+
+        effective_timeout = timeout if timeout is not None else self.timeout
+
+        try:
+            return await self._run_once(cmd, args, effective_timeout)
+        except ObsidianCLIError as exc:
+            retry_match = _COMMAND_NOT_FOUND_RE.match(exc.stderr)
+            if not args or not retry_match or retry_match.group("command") != args[0]:
+                raise
+            # Obsidian registers each command's CLI handler asynchronously
+            # while a cold vault window boots. The first command that
+            # triggers that open can reach the CLI server before its own
+            # handler finishes registering and gets misreported as "not
+            # found" -- one short retry clears the race. Bounded to a
+            # single retry so a genuinely unknown command still fails fast.
+            await asyncio.sleep(0.75)
+            return await self._run_once(cmd, args, effective_timeout)
 
     # -------------------------------------------------------------------------
     # Directory Operations

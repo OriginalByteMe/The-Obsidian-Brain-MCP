@@ -151,12 +151,12 @@ Every book you read strengthens your second brain.
 
 ## Prerequisites
 
-1. **Obsidian 1.12.4+** with the CLI enabled:
-   - Open **Obsidian Settings > General > Command line interface**
-   - Enable the CLI toggle
-   - Keep the Obsidian desktop app running while the server uses the CLI
-   - The `obsidian` command must be on your PATH
-   - Alternatively, set the `OBSIDIAN_CLI_PATH` environment variable to the full path of the `obsidian` binary
+1. **Obsidian 1.12.4+** (verified against 1.12.7) with the officially registered CLI:
+   - In Obsidian, open **Settings > General > Advanced** and turn **Command line interface** on.
+   - Accept the follow-up prompt to register it in your PATH. On Linux this copies Obsidian's bundled `obsidian-cli` to `~/.local/bin/obsidian` (mode 755); ensure `~/.local/bin` is on your PATH. On Windows it appends the install directory to the user PATH; on macOS it links into `/usr/local/bin`.
+   - Verify the registration with `obsidian version` (for example, `1.12.7 (installer 1.12.7)`).
+   - Keep the Obsidian desktop app running while the server uses the CLI.
+   - `OBSIDIAN_CLI_PATH` remains available when you need to point at the binary explicitly.
 2. **uv** package manager: [Install uv](https://docs.astral.sh/uv/getting-started/installation/)
 
 ## Installation
@@ -330,15 +330,24 @@ obsidian-brain
 
 | Variable | Required | Default | Description |
 |----------|:--------:|---------|-------------|
-| `OBSIDIAN_CLI_PATH` | | auto-detected | Obsidian CLI executable path when it is not on `PATH` |
-| `OBSIDIAN_VAULT` | | CLI default/active vault | Exact Obsidian vault name (not a filesystem path) |
+| `OBSIDIAN_CLI_PATH` | | auto-detected | Obsidian CLI executable path; set this to point at the binary explicitly |
+| `OBSIDIAN_VAULT` | | see vault resolution below | Vault folder name or id (not a filesystem path) to pass as the CLI's `vault=` argument |
 
-The server discovers the CLI lazily. Set `OBSIDIAN_CLI_PATH` only for a non-standard executable location. Set `OBSIDIAN_VAULT` when the CLI should target a specific vault; otherwise Obsidian's default/active vault is used.
+The CLI resolves the target vault in this order:
+1. The `vault=` argument, which the server sends when `OBSIDIAN_VAULT` is set.
+2. The calling process's CWD, if it is inside a registered vault.
+3. The most recently focused open vault window in Obsidian.
+4. Otherwise the command fails with `Vault not found.`.
 
-> **Note:** The Obsidian CLI always exits 0 and never writes to stderr, even
-> on failure -- it reports errors as plain text on stdout (e.g.
-> `Error: File "Note.md" not found.`). This server classifies failures by
-> parsing that stdout text rather than relying on the exit code.
+If `OBSIDIAN_VAULT` is unset, you **must** have the vault open in Obsidian. The reliable option is to set it to the vault's folder name; Obsidian opens that vault's window on demand. A vault id from Obsidian's registry also works — the registry lives at `~/.config/obsidian/obsidian.json` on Linux (or `$XDG_CONFIG_HOME/obsidian/obsidian.json`), `~/Library/Application Support/obsidian/obsidian.json` on macOS, and `%APPDATA%\obsidian\obsidian.json` on Windows.
+
+Application-level failures are reported as a line of STDOUT with exit code 0 (for example, `Vault not found.` or `Error: File "X" not found.`). The exception is the CLI binary failing to reach Obsidian: it exits 1 and writes `The CLI is unable to find Obsidian. Please make sure Obsidian is running and try again.` to STDERR.
+
+### Troubleshooting
+
+- `Command line interface is not enabled. Please turn it on in Settings > General > Advanced.` — turn on **Command line interface** in Obsidian settings.
+- `Vault not found.` — set `OBSIDIAN_VAULT` to the vault's folder name or id, or open the vault in Obsidian.
+- `The CLI is unable to find Obsidian. Please make sure Obsidian is running and try again.` — start the Obsidian desktop app.
 
 Onboarding writes its vault profile to `Obsidian Brain/config.md` — a fenced YAML block inside a Markdown note, because the Obsidian CLI can only create `.md` files inside the visible vault (it rewrites any other extension and cannot write dot-folders).
 
