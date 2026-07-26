@@ -9,6 +9,7 @@ from mcp.server.fastmcp import FastMCP
 
 from .cli_client import ObsidianCLIClient
 from .resources.knowledge import register_knowledge_resource
+from .resources.notes import register_note_resources
 from .resources.structure import register_structure_resource
 from .tools.daily import register_daily_tools
 from .tools.knowledge import register_knowledge_tools
@@ -26,7 +27,7 @@ mcp = FastMCP(
 Obsidian Brain MCP Server - Intelligent Obsidian Vault Interaction
 
 This server provides tools for interacting with your Obsidian vault through
-the Obsidian CLI (requires Obsidian 1.12+ with CLI enabled and on PATH).
+the Obsidian CLI (requires Obsidian 1.12.4+ with CLI enabled and on PATH).
 
 ## Getting Started
 
@@ -43,14 +44,14 @@ For new vaults or first-time use:
 2. `refresh_vault_structure` - Scan the vault structure
 3. `run_onboarding` - Analyze vault and create configuration
 
-Onboarding creates `.obsidian-brain/` folder with:
+Onboarding creates the visible `Obsidian Brain/` folder with:
 - `config.yml` - Detected patterns (PARA, Zettelkasten, naming conventions)
 - `memories/vault-overview.md` - Vault structure summary
 - `memories/conventions.md` - Usage guidelines
 
 ## Memory System
 
-Memories persist across sessions in `.obsidian-brain/memories/`:
+Memories persist across sessions in `Obsidian Brain/memories/`:
 - `list_memories` - See all available memories
 - `read_memory` - Read specific memory content
 - `write_memory` - Store new information for future sessions
@@ -61,9 +62,11 @@ Store memories for: project context, user preferences, learnings, session summar
 
 ## Available Resources
 
-- `vault://structure` - Full vault structure with folders, notes, and metadata
-- `vault://tags` - All tags with usage counts
-- `vault://stats` - Aggregate vault statistics
+- `vault://files` - Cached note index with readable note URIs
+- `vault://note/{path}` - Markdown for a note listed by `vault://files`
+- `vault://structure` - Full cached vault structure with folders, notes, and metadata
+- `vault://tags` - Cached tags with usage counts
+- `vault://stats` - Cached aggregate vault statistics
 - `vault://knowledge` - Persistent knowledge base (Markdown)
 
 ## Available Tools
@@ -123,9 +126,10 @@ Store memories for: project context, user preferences, learnings, session summar
 
 ## Requirements
 
-- Obsidian 1.12+ with CLI enabled (Settings > General > Command line interface)
+- Obsidian 1.12.4+ with CLI enabled (Settings > General > Command line interface)
 - CLI registered on PATH (click 'Register CLI' in Obsidian settings)
 - Or set OBSIDIAN_CLI_PATH environment variable
+- Set OBSIDIAN_VAULT to choose a vault by name; otherwise the CLI default is used
 """.strip(),
 )
 
@@ -147,6 +151,7 @@ register_memory_tools(mcp, client)
 # Register all resources
 register_structure_resource(mcp)
 register_knowledge_resource(mcp, client)
+register_note_resources(mcp, client)
 
 
 def main():

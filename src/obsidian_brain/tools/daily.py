@@ -9,13 +9,24 @@ from datetime import datetime
 
 from mcp.server.fastmcp import FastMCP
 
-from ..exceptions import NoteNotFoundError, ObsidianCLIError
+from ..cache import vault_cache
+from ..exceptions import NoteNotFoundError
 from ..protocol import VaultClient
 from ..utils.wikilinks import create_wikilink
+from .errors import OPERATIONAL_ERRORS, error_json
 
 
 def register_daily_tools(server: FastMCP, client: VaultClient) -> None:
     """Register all daily note tools with the MCP server."""
+
+    async def _sync_daily_note(date: str) -> None:
+        """Refresh the written daily note in the cached index, if resolvable."""
+        try:
+            path = await client.get_daily_path(date)
+        except (NoteNotFoundError, *OPERATIONAL_ERRORS):
+            return
+        if path:
+            await vault_cache.sync_note(client, path)
 
     @server.tool()
     async def get_daily_note(date: str | None = None) -> str:
@@ -39,34 +50,36 @@ def register_daily_tools(server: FastMCP, client: VaultClient) -> None:
         try:
             datetime.strptime(date, "%Y-%m-%d")
         except ValueError:
-            return json.dumps({
-                "error": True,
-                "type": "ValidationError",
-                "message": f"Invalid date format: {date}. Use YYYY-MM-DD",
-            })
+            return json.dumps(
+                {
+                    "error": True,
+                    "type": "ValidationError",
+                    "message": f"Invalid date format: {date}. Use YYYY-MM-DD",
+                }
+            )
 
         try:
             data = await client.get_daily_note(date)
 
-            return json.dumps({
-                "success": True,
-                "date": date,
-                "content": data.get("content", ""),
-                "tags": data.get("tags", []),
-                "frontmatter": data.get("frontmatter", {}),
-            })
+            return json.dumps(
+                {
+                    "success": True,
+                    "date": date,
+                    "content": data.get("content", ""),
+                    "tags": data.get("tags", []),
+                    "frontmatter": data.get("frontmatter", {}),
+                }
+            )
         except NoteNotFoundError:
-            return json.dumps({
-                "error": True,
-                "type": "NoteNotFoundError",
-                "message": f"Daily note not found for {date}",
-            })
-        except ObsidianCLIError as e:
-            return json.dumps({
-                "error": True,
-                "type": "ObsidianCLIError",
-                "message": str(e),
-            })
+            return json.dumps(
+                {
+                    "error": True,
+                    "type": "NoteNotFoundError",
+                    "message": f"Daily note not found for {date}",
+                }
+            )
+        except OPERATIONAL_ERRORS as error:
+            return error_json(error)
 
     @server.tool()
     async def append_to_daily(
@@ -89,11 +102,13 @@ def register_daily_tools(server: FastMCP, client: VaultClient) -> None:
             Confirmation message
         """
         if not content or not content.strip():
-            return json.dumps({
-                "error": True,
-                "type": "ValidationError",
-                "message": "Content cannot be empty",
-            })
+            return json.dumps(
+                {
+                    "error": True,
+                    "type": "ValidationError",
+                    "message": "Content cannot be empty",
+                }
+            )
 
         # Use today if no date specified
         if not date:
@@ -103,11 +118,13 @@ def register_daily_tools(server: FastMCP, client: VaultClient) -> None:
         try:
             datetime.strptime(date, "%Y-%m-%d")
         except ValueError:
-            return json.dumps({
-                "error": True,
-                "type": "ValidationError",
-                "message": f"Invalid date format: {date}. Use YYYY-MM-DD",
-            })
+            return json.dumps(
+                {
+                    "error": True,
+                    "type": "ValidationError",
+                    "message": f"Invalid date format: {date}. Use YYYY-MM-DD",
+                }
+            )
 
         try:
             if heading:
@@ -119,25 +136,26 @@ def register_daily_tools(server: FastMCP, client: VaultClient) -> None:
                 append_content = f"\n{content}"
 
             await client.append_daily(append_content, date)
+            await _sync_daily_note(date)
 
-            return json.dumps({
-                "success": True,
-                "date": date,
-                "heading": heading,
-                "message": f"Appended to daily note for {date}",
-            })
+            return json.dumps(
+                {
+                    "success": True,
+                    "date": date,
+                    "heading": heading,
+                    "message": f"Appended to daily note for {date}",
+                }
+            )
         except NoteNotFoundError:
-            return json.dumps({
-                "error": True,
-                "type": "NoteNotFoundError",
-                "message": f"Daily note not found for {date}. It may need to be created first.",
-            })
-        except ObsidianCLIError as e:
-            return json.dumps({
-                "error": True,
-                "type": "ObsidianCLIError",
-                "message": str(e),
-            })
+            return json.dumps(
+                {
+                    "error": True,
+                    "type": "NoteNotFoundError",
+                    "message": f"Daily note not found for {date}. It may need to be created first.",
+                }
+            )
+        except OPERATIONAL_ERRORS as error:
+            return error_json(error)
 
     @server.tool()
     async def create_daily_entry(
@@ -165,11 +183,13 @@ def register_daily_tools(server: FastMCP, client: VaultClient) -> None:
             Confirmation message with the created entry
         """
         if not content or not content.strip():
-            return json.dumps({
-                "error": True,
-                "type": "ValidationError",
-                "message": "Entry content cannot be empty",
-            })
+            return json.dumps(
+                {
+                    "error": True,
+                    "type": "ValidationError",
+                    "message": "Entry content cannot be empty",
+                }
+            )
 
         # Use today if no date specified
         if not date:
@@ -179,11 +199,13 @@ def register_daily_tools(server: FastMCP, client: VaultClient) -> None:
         try:
             datetime.strptime(date, "%Y-%m-%d")
         except ValueError:
-            return json.dumps({
-                "error": True,
-                "type": "ValidationError",
-                "message": f"Invalid date format: {date}. Use YYYY-MM-DD",
-            })
+            return json.dumps(
+                {
+                    "error": True,
+                    "type": "ValidationError",
+                    "message": f"Invalid date format: {date}. Use YYYY-MM-DD",
+                }
+            )
 
         tags = tags or []
         links = links or []
@@ -206,25 +228,26 @@ def register_daily_tools(server: FastMCP, client: VaultClient) -> None:
 
         try:
             await client.append_daily(f"\n{entry}", date)
+            await _sync_daily_note(date)
 
-            return json.dumps({
-                "success": True,
-                "date": date,
-                "entry": entry,
-                "timestamp": timestamp,
-                "tags": tags,
-                "links": links,
-                "message": f"Created entry in daily note for {date}",
-            })
+            return json.dumps(
+                {
+                    "success": True,
+                    "date": date,
+                    "entry": entry,
+                    "timestamp": timestamp,
+                    "tags": tags,
+                    "links": links,
+                    "message": f"Created entry in daily note for {date}",
+                }
+            )
         except NoteNotFoundError:
-            return json.dumps({
-                "error": True,
-                "type": "NoteNotFoundError",
-                "message": f"Daily note not found for {date}. It may need to be created first.",
-            })
-        except ObsidianCLIError as e:
-            return json.dumps({
-                "error": True,
-                "type": "ObsidianCLIError",
-                "message": str(e),
-            })
+            return json.dumps(
+                {
+                    "error": True,
+                    "type": "NoteNotFoundError",
+                    "message": f"Daily note not found for {date}. It may need to be created first.",
+                }
+            )
+        except OPERATIONAL_ERRORS as error:
+            return error_json(error)

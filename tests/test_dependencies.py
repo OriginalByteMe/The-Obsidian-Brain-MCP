@@ -42,13 +42,20 @@ def _collect_python_files(*dirs: pathlib.Path) -> list[pathlib.Path]:
     return files
 
 
-FORBIDDEN_IMPORTS = ["mcp_use", "mcp-use", "import httpx", "from httpx", "pytest_httpx", "pytest-httpx"]
+FORBIDDEN_IMPORTS = [
+    "mcp_use",
+    "mcp-use",
+    "import httpx",
+    "from httpx",
+    "pytest_httpx",
+    "pytest-httpx",
+]
 
 
-def test_no_forbidden_imports_in_source():
-    """No source file should import removed dependencies."""
+def test_no_forbidden_imports_in_source_or_root():
+    """No source or repository-root Python file should import removed dependencies."""
     violations = []
-    for py_file in _collect_python_files(SRC_DIR):
+    for py_file in [*_collect_python_files(SRC_DIR), *PROJECT_ROOT.glob("*.py")]:
         content = py_file.read_text()
         for pattern in FORBIDDEN_IMPORTS:
             if pattern in content:
@@ -78,10 +85,10 @@ def test_pyproject_no_pytest_httpx():
     assert "pytest-httpx" not in content, "pyproject.toml still contains pytest-httpx"
 
 
-def test_pyproject_has_mcp_sdk():
-    """pyproject.toml should depend on mcp>=1.26.0."""
+def test_pyproject_pins_mcp_v1():
+    """pyproject.toml should stay on the stable MCP SDK v1 line."""
     content = PYPROJECT.read_text()
-    assert "mcp>=1.26.0" in content, "pyproject.toml missing mcp>=1.26.0 dependency"
+    assert '"mcp>=1.26.0,<2"' in content, "pyproject.toml must pin mcp>=1.26.0,<2"
 
 
 # --- Deleted file checks ---
@@ -100,7 +107,9 @@ def test_dockerfile_deleted():
 
 def test_docker_compose_deleted():
     """docker-compose.yml should be deleted."""
-    assert not (PROJECT_ROOT / "docker-compose.yml").exists(), "docker-compose.yml should be deleted"
+    assert not (PROJECT_ROOT / "docker-compose.yml").exists(), (
+        "docker-compose.yml should be deleted"
+    )
 
 
 # --- No stale imports of old client ---
@@ -109,7 +118,11 @@ def test_docker_compose_deleted():
 def test_no_old_client_imports():
     """No source file should import from .client (the old REST client module)."""
     violations = []
-    old_patterns = ["from .client import", "from ..client import", "from obsidian_brain.client import"]
+    old_patterns = [
+        "from .client import",
+        "from ..client import",
+        "from obsidian_brain.client import",
+    ]
     for py_file in _collect_python_files(SRC_DIR):
         content = py_file.read_text()
         for pattern in old_patterns:

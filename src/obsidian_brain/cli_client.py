@@ -9,10 +9,10 @@ The CLI binary is located via shutil.which with OBSIDIAN_CLI_PATH env var overri
 """
 
 import asyncio
-import json
 import os
 import re
 import shutil
+import time
 from pathlib import PurePosixPath
 from typing import Any
 
@@ -25,15 +25,49 @@ from .exceptions import (
 )
 from .parsers import (
     parse_daily,
-    parse_file_list,
     parse_note_read,
     parse_search_results,
-    parse_tags,
 )
 
-# Pattern matching Obsidian Electron startup log lines that leak into stdout.
-# Example: "2026-03-08 12:02:59 Loaded updated app package ..."
-_OBSIDIAN_LOG_RE = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} ")
+# Match only the known startup message, not arbitrary timestamped note content.
+_OBSIDIAN_LOG_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} Load(?:ed|ing) updated app package(?: .*)?$"
+)
+_ENOENT_RE = re.compile(r"\bENOENT\b", re.IGNORECASE)
+_ENOENT_PATH_RE = re.compile(r"open\s+['\"](?P<path>[^'\"]+)['\"]", re.IGNORECASE)
+_NOTE_TARGET_COMMANDS = frozenset({"read", "append", "delete"})
+_OBSIDIAN_RUNNING_TTL = 5.0
+_clock = time.monotonic
+_obsidian_running_until = 0.0
+
+
+def _is_missing_note(stderr: str, target_path: str) -> bool:
+    """Classify an ENOENT failure only when stderr names the targeted note."""
+    if not _ENOENT_RE.search(stderr):
+        return False
+    target = re.escape(str(PurePosixPath(target_path)))
+    # Require path-segment boundaries so "other-note.md" never matches "note.md".
+    return (
+        re.search(rf"(?:^|[\s'\"/]){target}(?:$|[\s'\",;)])", stderr.replace("\\", "/")) is not None
+    )
+
+
+def _missing_note_path(args: tuple[str, ...], stderr: str) -> str | None:
+    """Return the missing note's path when the failure is a file ENOENT."""
+    if not args:
+        return None
+    command = args[0]
+    target = next((arg.removeprefix("path=") for arg in args if arg.startswith("path=")), None)
+
+    if command in _NOTE_TARGET_COMMANDS and target is not None:
+        return target if _is_missing_note(stderr, target) else None
+
+    # Daily commands resolve their own target, so trust the ENOENT itself.
+    if command.startswith("daily:") and _ENOENT_RE.search(stderr):
+        named = _ENOENT_PATH_RE.search(stderr)
+        return named.group("path") if named else "daily note"
+
+    return None
 
 
 def find_cli_binary() -> str:
@@ -62,35 +96,22 @@ def find_cli_binary() -> str:
     raise CLINotFoundError(searched_paths="PATH")
 
 
-def _validate_path(path: str) -> None:
-    """Validate a note path for safety.
-
-    Args:
-        path: Note path to validate.
-
-    Raises:
-        ValueError: If path contains null bytes or other dangerous characters.
-    """
+def _validate_path(path: str, *, allow_root: bool = False) -> None:
+    """Require a vault-relative path that cannot escape the vault root."""
     if "\x00" in path:
         raise ValueError(f"Path contains null bytes: {path!r}")
+    if allow_root and path in {"", "/"}:
+        return
 
-
-def _split_note_path(path: str) -> tuple[str, str]:
-    """Split a full note path into folder and name components.
-
-    The CLI uses separate name= and path= args for create/update.
-    Example: "Projects/Active/note.md" -> ("Projects/Active", "note.md")
-
-    Args:
-        path: Full note path (e.g., "folder/note.md").
-
-    Returns:
-        Tuple of (folder, name). Folder is empty string if no folder.
-    """
-    p = PurePosixPath(path)
-    folder = str(p.parent) if str(p.parent) != "." else ""
-    name = p.name
-    return folder, name
+    parsed = PurePosixPath(path)
+    if (
+        not path
+        or parsed.is_absolute()
+        or any(part in {"", ".", ".."} for part in path.split("/"))
+        or "\\" in path
+        or re.match(r"^[A-Za-z]:", path)
+    ):
+        raise ValueError(f"Path must stay within the vault root: {path!r}")
 
 
 async def _check_obsidian_running() -> None:
@@ -103,15 +124,22 @@ async def _check_obsidian_running() -> None:
     Raises:
         ObsidianNotRunningError: If no Obsidian process is detected.
     """
+    global _obsidian_running_until
+
+    if _clock() < _obsidian_running_until:
+        return
     try:
         proc = await asyncio.create_subprocess_exec(
-            "pgrep", "-f", "obsidian.*app.asar",
+            "pgrep",
+            "-f",
+            "obsidian.*app.asar",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5.0)
         if proc.returncode != 0 or not stdout.strip():
             raise ObsidianNotRunningError()
+        _obsidian_running_until = _clock() + _OBSIDIAN_RUNNING_TTL
     except FileNotFoundError:
         # pgrep not available -- skip check rather than block
         pass
@@ -121,22 +149,15 @@ async def _check_obsidian_running() -> None:
 
 
 def _filter_log_lines(output: str) -> str:
-    """Remove Obsidian Electron startup log lines from CLI stdout.
-
-    The Obsidian binary sometimes emits timestamped log lines to stdout
-    (e.g., "2026-03-08 12:02:59 Loaded updated app package ...") before
-    the actual command output. These must be stripped to avoid corrupting
-    JSON parsing or plain-text parsing.
-
-    Args:
-        output: Raw stdout string from the CLI process.
-
-    Returns:
-        Cleaned output with log lines removed.
-    """
-    lines = output.split("\n")
-    filtered = [line for line in lines if not _OBSIDIAN_LOG_RE.match(line)]
-    return "\n".join(filtered)
+    """Remove known Obsidian startup lines without consuming note content."""
+    lines = output.splitlines(keepends=True)
+    first_content = 0
+    while first_content < len(lines):
+        line = lines[first_content].rstrip("\r\n")
+        if not _OBSIDIAN_LOG_RE.fullmatch(line):
+            break
+        first_content += 1
+    return "".join(lines[first_content:])
 
 
 class ObsidianCLIClient:
@@ -147,8 +168,8 @@ class ObsidianCLIClient:
     and have explicit timeouts via asyncio.wait_for.
 
     Args:
-        cli_path: Path to the obsidian binary. If None, uses find_cli_binary().
-        vault: Optional vault name for multi-vault setups.
+        cli_path: Optional binary path. Discovery is deferred until the first command.
+        vault: Optional vault name. Defaults to OBSIDIAN_VAULT when unset.
         timeout: Default timeout in seconds for CLI commands.
     """
 
@@ -158,11 +179,8 @@ class ObsidianCLIClient:
         vault: str | None = None,
         timeout: float = 30.0,
     ):
-        if cli_path is not None:
-            self.cli_path = cli_path
-        else:
-            self.cli_path = find_cli_binary()
-        self.vault = vault
+        self.cli_path = cli_path
+        self.vault = vault if vault is not None else os.environ.get("OBSIDIAN_VAULT")
         self.timeout = timeout
 
     async def _run(self, *args: str, timeout: float | None = None) -> str:
@@ -179,23 +197,29 @@ class ObsidianCLIClient:
             ObsidianCLIError: On non-zero exit code.
             CLITimeoutError: If command exceeds timeout.
         """
-        # Pre-flight: ensure Obsidian desktop app is running.
-        # Without this, CLI commands hang for the full timeout duration
-        # because the Electron binary launches a GUI instance instead of
-        # processing the command via IPC.
+        cli_path = self.cli_path
+        if cli_path is None:
+            cli_path = find_cli_binary()
+            self.cli_path = cli_path
+
+        # Without a running app, CLI commands launch Electron and hang.
         await _check_obsidian_running()
 
-        cmd = [self.cli_path, *args]
+        cmd = [cli_path]
         if self.vault:
             cmd.append(f"vault={self.vault}")
+        cmd.extend(args)
 
         effective_timeout = timeout if timeout is not None else self.timeout
 
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        except FileNotFoundError as exc:
+            raise CLINotFoundError(searched_paths=f"cli_path={cli_path}") from exc
 
         try:
             stdout, stderr = await asyncio.wait_for(
@@ -207,32 +231,28 @@ class ObsidianCLIClient:
             raise CLITimeoutError(timeout=effective_timeout, command=cmd)
 
         if proc.returncode != 0:
+            stderr_text = stderr.decode().strip()
+            missing = _missing_note_path(args, stderr_text)
+            if missing is not None:
+                raise NoteNotFoundError(missing, command=cmd)
             raise ObsidianCLIError(
                 returncode=proc.returncode,
-                stderr=stderr.decode().strip(),
+                stderr=stderr_text,
                 command=cmd,
             )
 
         return _filter_log_lines(stdout.decode())
 
-    async def _run_json(self, *args: str, timeout: float | None = None) -> Any:
-        """Execute a CLI command and parse JSON output.
-
-        Appends format=json to the args and parses the result.
-
-        Args:
-            *args: CLI command arguments.
-            timeout: Override default timeout.
-
-        Returns:
-            Parsed JSON data.
-        """
-        output = await self._run(*args, "format=json", timeout=timeout)
-        return json.loads(output)
-
     # -------------------------------------------------------------------------
     # Directory Operations
     # -------------------------------------------------------------------------
+    async def _get_file_lines(self, path: str) -> list[str]:
+        _validate_path(path, allow_root=True)
+        args = ["files"]
+        if path and path != "/":
+            args.append(f"folder={path}")
+        output = await self._run(*args)
+        return [line.strip() for line in output.strip().splitlines() if line.strip()]
 
     async def list_directory(self, path: str = "/") -> list[dict[str, Any]]:
         """List files and folders at the specified path.
@@ -241,43 +261,32 @@ class ObsidianCLIClient:
         (one entry per line), not JSON.  We use ``_run`` and parse
         the text output directly.
         """
-        _validate_path(path)
-        args = ["files"]
-        if path and path != "/":
-            args.append(f"folder={path}")
-        output = await self._run(*args)
+        lines = await self._get_file_lines(path)
         result = []
-        for line in output.strip().splitlines():
-            entry = line.strip()
-            if not entry:
-                continue
+        for entry in lines:
             is_folder = entry.endswith("/")
-            result.append({
-                "name": entry.rstrip("/"),
-                "type": "folder" if is_folder else "file",
-            })
+            result.append(
+                {
+                    "name": entry.rstrip("/"),
+                    "type": "folder" if is_folder else "file",
+                }
+            )
         return result
 
     async def get_all_files(self, path: str = "/") -> list[str]:
-        """Get all file paths under a directory.
+        """Get every file path under a directory, regardless of extension.
 
-        Note: The Obsidian CLI ``files`` command returns plain text
-        (one path per line), not JSON, even when ``format=json`` is
-        specified.  We therefore use ``_run`` instead of ``_run_json``.
+        Omitting ``ext`` is intentional: the Obsidian CLI ``files`` command
+        then lists Markdown notes and every attachment type. Its output is
+        plain text with one path per line, so this uses ``_run`` directly.
         """
-        _validate_path(path)
-        args = ["files", "ext=md"]
-        if path and path != "/":
-            args.append(f"folder={path}")
-        output = await self._run(*args)
-        # Plain-text output: one file path per line
-        return [line.strip() for line in output.strip().splitlines() if line.strip()]
+        return await self._get_file_lines(path)
 
     # -------------------------------------------------------------------------
     # Note Operations
     # -------------------------------------------------------------------------
 
-    async def get_note(self, path: str, include_metadata: bool = True) -> dict[str, Any]:
+    async def get_note(self, path: str) -> dict[str, Any]:
         """Get a note's content and metadata.
 
         Note: The Obsidian CLI ``read`` command returns raw markdown text,
@@ -293,57 +302,50 @@ class ObsidianCLIClient:
         """Check if a note exists in the vault."""
         _validate_path(path)
         try:
-            await self.get_note(path, include_metadata=False)
+            await self.get_note(path)
             return True
-        except ObsidianCLIError:
+        except NoteNotFoundError:
             return False
 
     async def create_note(self, path: str, content: str) -> None:
-        """Create a new note."""
+        """Create a new note at an exact vault-relative path."""
         _validate_path(path)
-        folder, name = _split_note_path(path)
-        args = ["create", f"name={name}"]
-        if folder:
-            args.append(f"path={folder}")
-        args.extend([f"content={content}", "--silent"])
-        await self._run(*args)
+        await self._run("create", f"path={path}", f"content={content}")
 
     async def update_note(self, path: str, content: str) -> None:
         """Replace a note's entire content."""
         _validate_path(path)
-        folder, name = _split_note_path(path)
-        args = ["create", f"name={name}"]
-        if folder:
-            args.append(f"path={folder}")
-        args.extend([f"content={content}", "--overwrite", "--silent"])
-        await self._run(*args)
+        await self._run("create", f"path={path}", f"content={content}", "overwrite")
 
     async def append_to_note(self, path: str, content: str) -> None:
         """Append content to an existing note."""
         _validate_path(path)
-        _folder, name = _split_note_path(path)
-        await self._run("append", f"file={name}", f"content={content}")
+        await self._run("append", f"path={path}", f"content={content}")
 
     async def delete_note(self, path: str) -> None:
         """Delete a note from the vault."""
         _validate_path(path)
-        _folder, name = _split_note_path(path)
-        await self._run("delete", f"file={name}")
+        await self._run("delete", f"path={path}")
 
     # -------------------------------------------------------------------------
     # Search Operations
     # -------------------------------------------------------------------------
 
-    async def search_simple(
-        self, query: str, context_length: int = 100
-    ) -> list[dict[str, Any]]:
-        """Perform text search across the vault."""
-        data = await self._run_json("search", f"query={query}")
-        return parse_search_results(data)
+    async def search_simple(self, query: str) -> list[dict[str, Any]]:
+        """Search the vault and return each matching file with its matching lines."""
+        output = await self._run("search:context", f"query={query}", "format=text")
+        return parse_search_results(output)
 
     # -------------------------------------------------------------------------
     # Daily Notes
     # -------------------------------------------------------------------------
+
+    async def get_daily_path(self, date: str | None = None) -> str:
+        """Resolve the daily note's vault-relative path, created or not."""
+        args = ["daily:path"]
+        if date:
+            args.append(f"date={date}")
+        return (await self._run(*args)).strip()
 
     async def get_daily_note(self, date: str | None = None) -> dict[str, Any]:
         """Get today's daily note (or a specific date's).
@@ -364,30 +366,3 @@ class ObsidianCLIClient:
         if date:
             args.append(f"date={date}")
         await self._run(*args)
-
-    # -------------------------------------------------------------------------
-    # Tags and Links
-    # -------------------------------------------------------------------------
-
-    async def get_tags(self) -> dict[str, int]:
-        """Get all tags in the vault with their counts."""
-        data = await self._run_json("tags")
-        return parse_tags(data)
-
-    async def get_backlinks(self, path: str) -> list[str]:
-        """Get notes that link to the specified note."""
-        _validate_path(path)
-        _folder, name = _split_note_path(path)
-        data = await self._run_json("backlinks", f"file={name}")
-        if isinstance(data, list):
-            return [item if isinstance(item, str) else item.get("path", "") for item in data]
-        return []
-
-    async def get_links(self, path: str) -> list[str]:
-        """Get outgoing links from the specified note."""
-        _validate_path(path)
-        _folder, name = _split_note_path(path)
-        data = await self._run_json("links", f"file={name}")
-        if isinstance(data, list):
-            return [item if isinstance(item, str) else item.get("path", "") for item in data]
-        return []

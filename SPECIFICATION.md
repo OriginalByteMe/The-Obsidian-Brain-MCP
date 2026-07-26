@@ -2,7 +2,7 @@
 
 > **Version**: 0.2.0
 > **Status**: Active
-> **Last Updated**: 2026-03-08
+> **Last Updated**: 2026-07-26
 
 ## Overview
 
@@ -28,7 +28,7 @@ src/
     server.py              # FastMCP server definition and tool registration
     protocol.py            # VaultClient Protocol (abstract interface)
     cli_client.py          # ObsidianCLIClient (CLI subprocess implementation)
-    parsers.py             # JSON/text output parsers for CLI responses
+    parsers.py             # Text-output parsers for CLI responses
     exceptions.py          # CLI-specific exception hierarchy
     models.py              # Pydantic models for data structures
     cache.py               # In-memory vault structure cache
@@ -44,7 +44,9 @@ src/
       memory.py            # Cross-session persistent memory
     resources/
       __init__.py
-      structure.py         # vault://structure resource
+      knowledge.py         # vault://knowledge resource
+      notes.py             # vault://files index and vault://note/{path} template
+      structure.py         # vault://structure, vault://tags, vault://stats resources
     utils/
       __init__.py
       wikilinks.py         # [[wikilink]] parsing and injection
@@ -58,7 +60,7 @@ README.md
 
 ### Backend: Obsidian CLI
 
-All vault operations go through the `ObsidianCLIClient`, which implements the `VaultClient` Protocol. The CLI binary is located via `shutil.which("obsidian")` with an `OBSIDIAN_CLI_PATH` environment variable override.
+All vault operations go through the `ObsidianCLIClient`, which implements the `VaultClient` Protocol. The CLI binary is located via `shutil.which("obsidian")` with an `OBSIDIAN_CLI_PATH` environment variable override; `OBSIDIAN_VAULT` optionally selects an exact vault name.
 
 **Key design decisions:**
 - **No shell=True**: All subprocess calls use list-form arguments for safety
@@ -81,32 +83,37 @@ class VaultClient(Protocol):
     async def update_note(self, path: str, content: str) -> None: ...
     async def append_to_note(self, path: str, content: str) -> None: ...
     async def delete_note(self, path: str) -> None: ...
-    async def search_simple(self, query: str, context_length: int = 100) -> list[dict[str, Any]]: ...
+    async def search_simple(self, query: str) -> list[dict[str, Any]]: ...
     async def get_daily_note(self, date: str | None = None) -> dict[str, Any]: ...
     async def append_daily(self, content: str, date: str | None = None) -> None: ...
-    async def get_tags(self) -> dict[str, int]: ...
-    async def get_backlinks(self, path: str) -> list[str]: ...
-    async def get_links(self, path: str) -> list[str]: ...
 ```
 
 ### CLI Command Mapping
 
 | VaultClient Method | CLI Command |
 |---|---|
-| `list_directory` | `obsidian files folder="{path}" format=json` |
-| `get_all_files` | `obsidian files ext=md format=json` |
-| `get_note` | `obsidian read path="{path}" format=json` |
-| `note_exists` | `obsidian read` (check returncode) |
-| `create_note` | `obsidian create name="{name}" path="{folder}" content="{content}" --silent` |
-| `update_note` | `obsidian create --overwrite --silent` |
-| `append_to_note` | `obsidian append file="{name}" content="{content}"` |
-| `delete_note` | `obsidian delete file="{name}"` |
-| `search_simple` | `obsidian search query="{query}" format=json` |
-| `get_daily_note` | `obsidian daily:read format=json` |
-| `append_daily` | `obsidian daily:append content="{content}"` |
-| `get_tags` | `obsidian tags format=json` |
-| `get_backlinks` | `obsidian backlinks file="{name}" format=json` |
-| `get_links` | `obsidian links file="{name}" format=json` |
+| `list_directory` | `obsidian files [folder="{path}"]` |
+| `get_all_files` | `obsidian files [folder="{path}"]` |
+| `get_note` | `obsidian read path="{path}"` |
+| `note_exists` | `obsidian read path="{path}"` (check return code) |
+| `create_note` | `obsidian create path="{path}" content="{content}"` |
+| `update_note` | `obsidian create path="{path}" content="{content}" overwrite` |
+| `append_to_note` | `obsidian append path="{path}" content="{content}"` |
+| `delete_note` | `obsidian delete path="{path}"` |
+| `search_simple` | `obsidian search:context query="{query}" format=text` |
+| `get_daily_note` | `obsidian daily:read [date="{date}"]` |
+| `append_daily` | `obsidian daily:append content="{content}" [date="{date}"]` |
+
+`search_simple` accepts only the query and always uses `search:context format=text`;
+the CLI exposes no context-length option. `ObsidianCLIClient` parses the text
+output directly and has no JSON execution helper or `parse_tags` /
+`parse_file_list` compatibility parsers.
+
+`get_note` returns `path`, parsed Markdown `content`, normalized `tags`,
+remaining `frontmatter`, `modified`, and `raw`. The `raw` value is the complete
+original document, including YAML frontmatter (and equals `content` when no
+frontmatter is present). Frontmatter is parsed by the installed
+`python-frontmatter` dependency rather than a hand-written YAML parser.
 
 ---
 
@@ -116,9 +123,10 @@ class VaultClient(Protocol):
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `OBSIDIAN_CLI_PATH` | No | auto-detected | Path to Obsidian CLI binary |
+| `OBSIDIAN_CLI_PATH` | No | auto-detected | Executable path when `obsidian` is not on `PATH` |
+| `OBSIDIAN_VAULT` | No | CLI default/active vault | Exact Obsidian vault name, not a filesystem path |
 
-The `obsidian` CLI binary must be available on PATH or specified via `OBSIDIAN_CLI_PATH`. Requires Obsidian 1.12.4+ with CLI enabled in Settings > General.
+The Obsidian desktop app must be running with the CLI enabled under **Settings > General > Command line interface**. The `obsidian` executable must be available on `PATH` or specified with `OBSIDIAN_CLI_PATH`. Onboarding writes the vault profile to the visible `Obsidian Brain/config.yml` path.
 
 ---
 
@@ -126,7 +134,7 @@ The `obsidian` CLI binary must be available on PATH or specified via `OBSIDIAN_C
 
 ### VaultStructure
 
-The cached representation of the entire vault, exposed via the `vault://structure` resource.
+The cached, note-oriented representation of the vault, exposed via the `vault://structure` resource.
 
 ```python
 class FolderNode(BaseModel):
@@ -157,15 +165,17 @@ class VaultStructure(BaseModel):
     refreshed_at: datetime
 ```
 
+The cache separately retains every vault file path for `vault://files`; attachments are not represented as `NoteMetadata`.
+
 ---
 
 ## Caching Strategy
 
-The `VaultCache` provides an in-memory cache of vault structure with on-demand refresh.
+The `VaultCache` provides an in-memory cache populated on demand by `refresh_vault_structure`.
 
 **Cache refresh is optimized for CLI performance:**
-1. **Bulk file listing**: Single `get_all_files()` call (maps to `obsidian files ext=md format=json`) instead of recursive directory traversal
-2. **Bounded concurrent reads**: Note metadata is fetched with `asyncio.Semaphore(10)` -- up to 10 notes read concurrently via `asyncio.gather`
+1. **Bulk file listing**: Single `get_all_files()` call (maps to `obsidian files`) returns every vault file
+2. **Markdown-only metadata reads**: Attachments stay in the all-file index, while Markdown note metadata is fetched with `asyncio.Semaphore(10)` and `asyncio.gather`
 3. **Folder hierarchy derived**: Built from flat file paths rather than recursive `list_directory` calls
 4. **Backlink index computed cache-side**: Uses extracted wikilinks from note content, not CLI backlinks command (avoids N+1 CLI calls)
 
@@ -173,6 +183,7 @@ The `VaultCache` provides an in-memory cache of vault structure with on-demand r
 class VaultCache:
     async def refresh(self, client: VaultClient) -> VaultStructure: ...
     def get_structure(self) -> VaultStructure: ...
+    def get_file_paths(self) -> list[str]: ...
     def get_backlinks(self, path: str) -> list[str]: ...
     def get_note_metadata(self, path: str) -> NoteMetadata | None: ...
     def get_all_tags(self) -> dict[str, int]: ...
@@ -207,7 +218,7 @@ class CacheNotInitializedError(Exception):
 
 ## MCP Server
 
-The server uses **FastMCP** from the official `mcp` SDK (>= 1.26.0). Tools are registered via `register_*_tools(server, client)` functions in each tool module.
+The server uses **FastMCP** from the official `mcp` Python SDK v1 line (`>=1.26.0,<2`). Tools are registered via `register_*_tools(server, client)` functions in each tool module.
 
 ```python
 from mcp.server.fastmcp import FastMCP
@@ -220,6 +231,25 @@ register_link_tools(server, client)
 register_tag_tools(server, client)
 # ... etc
 ```
+
+Run a local checkout through the package module:
+
+```bash
+uv run python -m obsidian_brain.server
+```
+
+### Resources
+
+| Resource | Description |
+|---|---|
+| `vault://files` | Cached JSON index of every vault file |
+| `vault://note/{path}` | Markdown reader template for readable entries in `vault://files` |
+| `vault://structure` | Cached folder hierarchy and Markdown note metadata |
+| `vault://tags` | Cached tag counts |
+| `vault://stats` | Cached aggregate vault statistics |
+| `vault://knowledge` | Persistent Markdown knowledge base |
+
+`refresh_vault_structure` populates the cached structure. Each `vault://files` entry has `path`, lowercase `extension`, and `readable`; readable Markdown entries also have a percent-encoded `vault://note/{path}` URI, while attachments do not. MCP resource discovery and reads are the server-side guarantee. IDE `@` pickers are host features, so the server cannot force resources into or customize them.
 
 ### Tools Removed from REST Version
 
@@ -243,10 +273,12 @@ The following tools had no CLI equivalent and were removed:
 
 ```toml
 dependencies = [
-    "mcp>=1.26.0",
+    "mcp>=1.26.0,<2",
     "pydantic>=2.0.0",
     "python-frontmatter>=1.1.0",
 ]
 ```
+
+The project stays on the stable, supported v1 line of the official MCP Python SDK. MCP v2 is still alpha, and standalone `fastmcp` v4 requires the `mcp==2.0.0b2` prerelease.
 
 No HTTP client libraries. No Docker deployment.

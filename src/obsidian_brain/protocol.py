@@ -28,9 +28,6 @@ class VaultClient(Protocol):
         search_simple   -> obsidian search query="{query}" format=json
         get_daily_note  -> obsidian daily:read format=json
         append_daily    -> obsidian daily:append content="{content}"
-        get_tags        -> obsidian tags format=json
-        get_backlinks   -> obsidian backlinks file="{name}" format=json
-        get_links       -> obsidian links file="{name}" format=json
     """
 
     async def list_directory(self, path: str = "/") -> list[dict[str, Any]]:
@@ -55,15 +52,15 @@ class VaultClient(Protocol):
         """
         ...
 
-    async def get_note(self, path: str, include_metadata: bool = True) -> dict[str, Any]:
+    async def get_note(self, path: str) -> dict[str, Any]:
         """Get a note's content and metadata.
 
         Args:
             path: Path to the note (e.g., "Projects/MyProject.md").
-            include_metadata: If True, include tags/frontmatter/modified.
 
         Returns:
-            Dict with path, content, tags, frontmatter, modified.
+            Dict with path, content, raw, tags, frontmatter, and modified.
+            ``raw`` is the complete original text, including YAML frontmatter.
         """
         ...
 
@@ -113,17 +110,25 @@ class VaultClient(Protocol):
         """
         ...
 
-    async def search_simple(
-        self, query: str, context_length: int = 100
-    ) -> list[dict[str, Any]]:
+    async def search_simple(self, query: str) -> list[dict[str, Any]]:
         """Perform text search across the vault.
 
         Args:
             query: Search query string.
-            context_length: Characters of context around matches.
 
         Returns:
             List of matches with path, matches, and score.
+        """
+        ...
+
+    async def get_daily_path(self, date: str | None = None) -> str:
+        """Resolve the daily note's vault-relative path, created or not.
+
+        Args:
+            date: Optional date string for a specific daily note.
+
+        Returns:
+            Vault-relative path of the daily note.
         """
         ...
 
@@ -144,35 +149,5 @@ class VaultClient(Protocol):
         Args:
             content: Content to append.
             date: Optional date string for a specific daily note.
-        """
-        ...
-
-    async def get_tags(self) -> dict[str, int]:
-        """Get all tags in the vault with their counts.
-
-        Returns:
-            Dict mapping tag names to occurrence counts.
-        """
-        ...
-
-    async def get_backlinks(self, path: str) -> list[str]:
-        """Get notes that link to the specified note.
-
-        Args:
-            path: Path to the note.
-
-        Returns:
-            List of note paths that contain links to this note.
-        """
-        ...
-
-    async def get_links(self, path: str) -> list[str]:
-        """Get outgoing links from the specified note.
-
-        Args:
-            path: Path to the note.
-
-        Returns:
-            List of note paths this note links to.
         """
         ...

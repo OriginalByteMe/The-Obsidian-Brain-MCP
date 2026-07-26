@@ -35,6 +35,7 @@ from tests.test_snapshots import (
 # Shape validation helper
 # ---------------------------------------------------------------------------
 
+
 def assert_matches_shape(data: Any, shape: Any, path: str = "root") -> None:
     """
     Recursively verify that `data` matches the expected `shape`.
@@ -97,6 +98,7 @@ def assert_matches_shape(data: Any, shape: Any, path: str = "root") -> None:
 # Mock infrastructure
 # ---------------------------------------------------------------------------
 
+
 class MockObsidianClient:
     """
     Mock that simulates ObsidianClient responses for shape testing.
@@ -105,43 +107,54 @@ class MockObsidianClient:
     """
 
     def __init__(self):
-        self.list_directory = AsyncMock(return_value=[
-            {"name": "test.md", "type": "file"},
-            {"name": "folder", "type": "folder"},
-        ])
-        self.get_note = AsyncMock(return_value={
-            "content": "# Test\n\nHello [[World]]",
-            "tags": ["test", "example"],
-            "frontmatter": {"title": "Test"},
-            "modified": "2024-01-15T10:30:00Z",
-        })
+        self.list_directory = AsyncMock(
+            return_value=[
+                {"name": "test.md", "type": "file"},
+                {"name": "folder", "type": "folder"},
+            ]
+        )
+        self.get_note = AsyncMock(
+            return_value={
+                "content": "# Test\n\nHello [[World]]",
+                "tags": ["test", "example"],
+                "frontmatter": {"title": "Test"},
+                "modified": "2024-01-15T10:30:00Z",
+            }
+        )
         self.create_note = AsyncMock()
         self.update_note = AsyncMock()
         self.append_to_note = AsyncMock()
         self.patch_note = AsyncMock()
         self.delete_note = AsyncMock()
         self.note_exists = AsyncMock(return_value=True)
-        self.search_simple = AsyncMock(return_value=[
-            {
-                "filename": "test.md",
-                "matches": [{"match": "found text"}],
-                "score": 1.5,
+        self.search_simple = AsyncMock(
+            return_value=[
+                {
+                    "path": "test.md",
+                    "matches": ["found text"],
+                    "score": 1.5,
+                }
+            ]
+        )
+        self.get_daily_path = AsyncMock(return_value="Daily/2024-01-15.md")
+        self.get_daily_note = AsyncMock(
+            return_value={
+                "content": "# Daily\n\nToday's note",
+                "tags": ["daily"],
+                "frontmatter": {"date": "2024-01-15"},
             }
-        ])
-        self.get_daily_note = AsyncMock(return_value={
-            "content": "# Daily\n\nToday's note",
-            "tags": ["daily"],
-            "frontmatter": {"date": "2024-01-15"},
-        })
+        )
         self.append_daily = AsyncMock()
         self.get_tags = AsyncMock(return_value={"test": 5, "example": 3})
         self.get_backlinks = AsyncMock(return_value=["note1.md", "note2.md"])
         self.get_links = AsyncMock(return_value=["other.md", "project.md"])
-        self.get_all_files = AsyncMock(return_value=[
-            ".obsidian-brain/config.yml",
-            ".obsidian-brain/memories/vault-overview.md",
-            "test.md",
-        ])
+        self.get_all_files = AsyncMock(
+            return_value=[
+                ".obsidian-brain/config.yml",
+                ".obsidian-brain/memories/vault-overview.md",
+                "test.md",
+            ]
+        )
 
 
 def _create_mock_client():
@@ -153,10 +166,10 @@ def _create_mock_client():
 # Mock vault cache
 # ---------------------------------------------------------------------------
 
+
 def _create_mock_vault_cache():
     """Create a mock vault cache with canned data."""
     mock_cache = MagicMock()
-    mock_cache.is_initialized = True
 
     mock_structure = MagicMock()
     mock_structure.stats.total_notes = 10
@@ -176,12 +189,11 @@ def _create_mock_vault_cache():
 
     mock_cache.get_structure.return_value = mock_structure
     mock_cache.refresh = AsyncMock(return_value=mock_structure)
+    mock_cache.sync_note = AsyncMock()
     mock_cache.get_backlinks.return_value = ["note1.md", "note2.md"]
     mock_cache.get_all_tags.return_value = {"test": 5, "example": 3}
     mock_cache.get_notes_by_tag.return_value = ["test.md", "example.md"]
-    mock_cache.get_note_metadata.return_value = MagicMock(
-        outgoing_links=[], incoming_links=[]
-    )
+    mock_cache.get_note_metadata.return_value = MagicMock(outgoing_links=[], incoming_links=[])
 
     return mock_cache
 
@@ -189,6 +201,7 @@ def _create_mock_vault_cache():
 # ---------------------------------------------------------------------------
 # Mock MCP server for tool registration
 # ---------------------------------------------------------------------------
+
 
 class MockMCPServer:
     """Captures tool functions registered via @server.tool()."""
@@ -200,12 +213,14 @@ class MockMCPServer:
         def decorator(func):
             self.tools[func.__name__] = func
             return func
+
         return decorator
 
 
 # ---------------------------------------------------------------------------
 # Test helpers
 # ---------------------------------------------------------------------------
+
 
 def _register_all_tools(server: MockMCPServer, client: MockObsidianClient) -> None:
     """Register all tool modules with the mock server."""
@@ -250,6 +265,7 @@ def mock_cache():
 # Registration tests
 # ---------------------------------------------------------------------------
 
+
 class TestToolRegistration:
     """Verify all expected tools are registered."""
 
@@ -274,6 +290,7 @@ class TestToolRegistration:
 # ---------------------------------------------------------------------------
 # Response shape tests -- Vault tools
 # ---------------------------------------------------------------------------
+
 
 class TestVaultToolShapes:
     """Verify vault tool response shapes match frozen snapshots."""
@@ -303,18 +320,14 @@ class TestVaultToolShapes:
 
     @pytest.mark.asyncio
     async def test_update_note_shape(self, mock_server, mock_client):
-        result = await mock_server.tools["update_note"](
-            path="test.md", content="Updated"
-        )
+        result = await mock_server.tools["update_note"](path="test.md", content="Updated")
         assert isinstance(result, str)
         data = json.loads(result)
         assert_matches_shape(data, FROZEN_SHAPES["update_note"])
 
     @pytest.mark.asyncio
     async def test_append_to_note_shape(self, mock_server, mock_client):
-        result = await mock_server.tools["append_to_note"](
-            path="test.md", content="More text"
-        )
+        result = await mock_server.tools["append_to_note"](path="test.md", content="More text")
         assert isinstance(result, str)
         data = json.loads(result)
         assert_matches_shape(data, FROZEN_SHAPES["append_to_note"])
@@ -343,23 +356,68 @@ class TestVaultToolShapes:
 # Response shape tests -- Link tools
 # ---------------------------------------------------------------------------
 
+
 class TestLinkToolShapes:
     """Verify link tool response shapes match frozen snapshots."""
 
     @pytest.mark.asyncio
-    async def test_add_backlink_shape(self, mock_server, mock_client):
-        # Mock get_note to return content without the target link
-        mock_client.get_note.return_value = {
-            "content": "# Test\n\nSome content",
-            "tags": [],
-            "frontmatter": {},
-        }
-        result = await mock_server.tools["add_backlink"](
-            source_path="test.md", target_note="Other Note"
+    async def test_add_backlink_shape(self, mock_server, mock_client, mock_cache):
+        raw = (
+            "---\n"
+            "tags:\n"
+            "  - project\n"
+            "  - active\n"
+            "aliases:\n"
+            "  - Test Alias\n"
+            "---\n"
+            "# Test\n\nSome content\n"
         )
+        mock_client.get_note.return_value = {
+            "content": "# Test\n\nSome content\n",
+            "raw": raw,
+            "tags": ["project", "active"],
+            "frontmatter": {"aliases": ["Test Alias"]},
+        }
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr("obsidian_brain.tools.links.vault_cache", mock_cache)
+            result = await mock_server.tools["add_backlink"](
+                source_path="test.md", target_note="Other Note"
+            )
         assert isinstance(result, str)
         data = json.loads(result)
         assert_matches_shape(data, FROZEN_SHAPES["add_backlink"])
+        mock_client.update_note.assert_awaited_once_with(
+            "test.md",
+            "---\n"
+            "tags:\n"
+            "  - project\n"
+            "  - active\n"
+            "aliases:\n"
+            "  - Test Alias\n"
+            "---\n"
+            "# Test\n\nSome content\n\n"
+            "## See Also\n\n"
+            "- [[Other Note]]\n",
+        )
+        mock_cache.sync_note.assert_awaited_once_with(mock_client, "test.md")
+
+    @pytest.mark.asyncio
+    async def test_add_backlink_reuses_existing_see_also_section(
+        self, mock_server, mock_client, mock_cache
+    ):
+        raw = "# Test\n\nSome content\n\n## See Also\n\n- [[First Note]]\n"
+        mock_client.get_note.return_value = {
+            "content": raw,
+            "raw": raw,
+            "tags": [],
+            "frontmatter": {},
+        }
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr("obsidian_brain.tools.links.vault_cache", mock_cache)
+            await mock_server.tools["add_backlink"](source_path="test.md", target_note="Other Note")
+        written = mock_client.update_note.await_args[0][1]
+        assert written.count("## See Also") == 1
+        assert "- [[First Note]]\n- [[Other Note]]" in written
 
     @pytest.mark.asyncio
     async def test_get_backlinks_shape(self, mock_server, mock_cache):
@@ -391,26 +449,75 @@ class TestLinkToolShapes:
 # Response shape tests -- Tag tools
 # ---------------------------------------------------------------------------
 
+
 class TestTagToolShapes:
     """Verify tag tool response shapes match frozen snapshots."""
 
     @pytest.mark.asyncio
-    async def test_add_tags_shape(self, mock_server, mock_client):
-        result = await mock_server.tools["add_tags"](
-            path="test.md", tags=["newtag"]
-        )
+    async def test_add_tags_shape(self, mock_server, mock_client, mock_cache):
+        mock_client.get_note.return_value = {
+            "content": "# Test\n\nSome content\n",
+            "raw": (
+                "---\n"
+                "tags:\n"
+                "  - project\n"
+                "  - active\n"
+                "aliases:\n"
+                "  - Test Alias\n"
+                "---\n"
+                "# Test\n\nSome content\n"
+            ),
+            "tags": ["project", "active"],
+            "frontmatter": {"aliases": ["Test Alias"]},
+        }
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr("obsidian_brain.tools.tags.vault_cache", mock_cache)
+            result = await mock_server.tools["add_tags"](path="test.md", tags=["newtag"])
         assert isinstance(result, str)
         data = json.loads(result)
         assert_matches_shape(data, FROZEN_SHAPES["add_tags"])
+        mock_client.update_note.assert_awaited_once_with(
+            "test.md",
+            "---\n"
+            "aliases:\n"
+            "- Test Alias\n"
+            "tags:\n"
+            "- active\n"
+            "- newtag\n"
+            "- project\n"
+            "---\n\n"
+            "# Test\n\nSome content",
+        )
+        mock_cache.sync_note.assert_awaited_once_with(mock_client, "test.md")
 
     @pytest.mark.asyncio
-    async def test_remove_tags_shape(self, mock_server, mock_client):
-        result = await mock_server.tools["remove_tags"](
-            path="test.md", tags=["test"]
-        )
+    async def test_remove_tags_shape(self, mock_server, mock_client, mock_cache):
+        mock_client.get_note.return_value = {
+            "content": "# Test\n\nSome content\n",
+            "raw": (
+                "---\n"
+                "tags:\n"
+                "  - project\n"
+                "  - active\n"
+                "aliases:\n"
+                "  - Test Alias\n"
+                "---\n"
+                "# Test\n\nSome content\n"
+            ),
+            "tags": ["project", "active"],
+            "frontmatter": {"aliases": ["Test Alias"]},
+        }
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr("obsidian_brain.tools.tags.vault_cache", mock_cache)
+            result = await mock_server.tools["remove_tags"](path="test.md", tags=["active"])
         assert isinstance(result, str)
         data = json.loads(result)
         assert_matches_shape(data, FROZEN_SHAPES["remove_tags"])
+        mock_client.update_note.assert_awaited_once_with(
+            "test.md",
+            "---\naliases:\n- Test Alias\ntags:\n- project\n---\n\n# Test\n\nSome content",
+        )
+        mock_cache.sync_note.assert_awaited_once_with(mock_client, "test.md")
 
     @pytest.mark.asyncio
     async def test_list_all_tags_shape(self, mock_server, mock_cache):
@@ -435,6 +542,7 @@ class TestTagToolShapes:
 # Response shape tests -- Search tools
 # ---------------------------------------------------------------------------
 
+
 class TestSearchToolShapes:
     """Verify search tool response shapes match frozen snapshots."""
 
@@ -450,6 +558,7 @@ class TestSearchToolShapes:
 # Response shape tests -- Daily tools
 # ---------------------------------------------------------------------------
 
+
 class TestDailyToolShapes:
     """Verify daily tool response shapes match frozen snapshots."""
 
@@ -462,9 +571,7 @@ class TestDailyToolShapes:
 
     @pytest.mark.asyncio
     async def test_append_to_daily_shape(self, mock_server, mock_client):
-        result = await mock_server.tools["append_to_daily"](
-            content="New entry", date="2024-01-15"
-        )
+        result = await mock_server.tools["append_to_daily"](content="New entry", date="2024-01-15")
         assert isinstance(result, str)
         data = json.loads(result)
         assert_matches_shape(data, FROZEN_SHAPES["append_to_daily"])
@@ -472,7 +579,9 @@ class TestDailyToolShapes:
     @pytest.mark.asyncio
     async def test_create_daily_entry_shape(self, mock_server, mock_client):
         result = await mock_server.tools["create_daily_entry"](
-            content="Did something", tags=["work"], links=["Project"],
+            content="Did something",
+            tags=["work"],
+            links=["Project"],
             date="2024-01-15",
         )
         assert isinstance(result, str)
@@ -483,6 +592,7 @@ class TestDailyToolShapes:
 # ---------------------------------------------------------------------------
 # Response shape tests -- Knowledge tools
 # ---------------------------------------------------------------------------
+
 
 class TestKnowledgeToolShapes:
     """Verify knowledge tool response shapes match frozen snapshots."""
@@ -520,6 +630,7 @@ class TestKnowledgeToolShapes:
 # ---------------------------------------------------------------------------
 # Response shape tests -- Memory tools
 # ---------------------------------------------------------------------------
+
 
 class TestMemoryToolShapes:
     """Verify memory tool response shapes match frozen snapshots."""
@@ -595,9 +706,11 @@ class TestMemoryToolShapes:
         mock_mem_mgr = MagicMock()
         mock_mem_mgr.get_memory_path.return_value = ".obsidian-brain/memories/test.md"
         mock_mem_mgr.update_memory_content.return_value = "Updated content"
+        raw = "---\ntype: learning\ncreated: 2024-01-15\n---\nOld content with findme text"
         mock_client.get_note.return_value = {
             "content": "Old content with findme text",
-            "frontmatter": {},
+            "raw": raw,
+            "frontmatter": {"type": "learning", "created": "2024-01-15"},
             "tags": [],
         }
         with pytest.MonkeyPatch.context() as mp:
@@ -608,11 +721,15 @@ class TestMemoryToolShapes:
         assert isinstance(result, str)
         data = json.loads(result)
         assert_matches_shape(data, FROZEN_SHAPES["edit_memory"])
+        mock_mem_mgr.update_memory_content.assert_called_once_with(
+            raw, "Old content with replaced text"
+        )
 
 
 # ---------------------------------------------------------------------------
 # Response shape tests -- Onboarding tools
 # ---------------------------------------------------------------------------
+
 
 class TestOnboardingToolShapes:
     """Verify onboarding tool response shapes match frozen snapshots."""
@@ -673,6 +790,7 @@ class TestOnboardingToolShapes:
 # Cross-cutting tests
 # ---------------------------------------------------------------------------
 
+
 class TestResponseContract:
     """Cross-cutting contract tests."""
 
@@ -689,15 +807,27 @@ class TestResponseContract:
     def test_frozen_shapes_cover_all_modules(self):
         """Verify shapes exist for tools from all 8 modules."""
         modules = {
-            "vault": ["list_vault_files", "get_note", "create_note", "update_note",
-                       "append_to_note", "refresh_vault_structure", "delete_note"],
+            "vault": [
+                "list_vault_files",
+                "get_note",
+                "create_note",
+                "update_note",
+                "append_to_note",
+                "refresh_vault_structure",
+                "delete_note",
+            ],
             "links": ["add_backlink", "get_backlinks", "get_outgoing_links", "get_linked_notes"],
             "tags": ["add_tags", "remove_tags", "list_all_tags", "get_notes_by_tag"],
             "search": ["search_content"],
             "daily": ["get_daily_note", "append_to_daily", "create_daily_entry"],
             "knowledge": ["create_vault_knowledge_base", "get_knowledge_base_status"],
-            "memory": ["list_memories", "read_memory", "write_memory",
-                        "delete_memory", "edit_memory"],
+            "memory": [
+                "list_memories",
+                "read_memory",
+                "write_memory",
+                "delete_memory",
+                "edit_memory",
+            ],
             "onboarding": ["check_onboarding_status", "run_onboarding", "get_vault_config"],
         }
         for module, tools in modules.items():

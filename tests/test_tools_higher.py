@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -32,7 +32,7 @@ class MockVaultClient:
     async def get_all_files(self, path: str = "/") -> list[str]:
         return list(self._files)
 
-    async def get_note(self, path: str, include_metadata: bool = True) -> dict[str, Any]:
+    async def get_note(self, path: str) -> dict[str, Any]:
         if path in self._notes:
             return self._notes[path]
         raise NoteNotFoundError(path)
@@ -42,22 +42,34 @@ class MockVaultClient:
 
     async def create_note(self, path: str, content: str) -> None:
         self.created_notes[path] = content
+        self._notes[path] = {
+            "content": content,
+            "frontmatter": {},
+            "tags": [],
+        }
+        if path not in self._files:
+            self._files.append(path)
 
     async def update_note(self, path: str, content: str) -> None:
-        self.created_notes[path] = content
+        await self.create_note(path, content)
 
     async def append_to_note(self, path: str, content: str) -> None:
-        pass
+        self._notes[path]["content"] += content
 
     async def delete_note(self, path: str) -> None:
-        if path not in self._notes and path not in self.created_notes:
+        if path not in self._notes:
             raise NoteNotFoundError(path)
         self.deleted_notes.append(path)
+        self._notes.pop(path)
+        self.created_notes.pop(path, None)
+        if path in self._files:
+            self._files.remove(path)
 
-    async def search_simple(
-        self, query: str, context_length: int = 100
-    ) -> list[dict[str, Any]]:
+    async def search_simple(self, query: str) -> list[dict[str, Any]]:
         return []
+
+    async def get_daily_path(self, date: str | None = None) -> str:
+        return f"Daily/{date or '2026-01-01'}.md"
 
     async def get_daily_note(self, date: str | None = None) -> dict[str, Any]:
         return {"content": "", "tags": [], "frontmatter": {}}
@@ -107,6 +119,7 @@ class TestKnowledgeToolRegistration:
             def decorator(fn):
                 tools[fn.__name__] = fn
                 return fn
+
             return decorator
 
         server.tool = capture_tool
@@ -130,6 +143,7 @@ class TestKnowledgeToolRegistration:
             def decorator(fn):
                 tools[fn.__name__] = fn
                 return fn
+
             return decorator
 
         server.tool = capture_tool
@@ -177,6 +191,7 @@ class TestMemoryToolRegistration:
             def decorator(fn):
                 tools[fn.__name__] = fn
                 return fn
+
             return decorator
 
         server.tool = capture_tool
@@ -198,6 +213,68 @@ class TestMemoryToolRegistration:
         assert "This is a test memory" in created_content
 
     @pytest.mark.asyncio
+    async def test_memory_updates_preserve_frontmatter(self):
+        from obsidian_brain.memory import memory_manager
+        from obsidian_brain.tools.memory import register_memory_tools
+
+        server = MagicMock()
+        tools = {}
+
+        def capture_tool():
+            def decorator(fn):
+                tools[fn.__name__] = fn
+                return fn
+
+            return decorator
+
+        server.tool = capture_tool
+        client = MockVaultClient()
+        path = memory_manager.get_memory_path("test-memory")
+        frontmatter = (
+            "---\n"
+            "created: original-created\n"
+            "updated: original-updated\n"
+            "type: learning\n"
+            "aliases:\n"
+            "- Durable context\n"
+            "---\n\n"
+        )
+        client._notes[path] = {
+            "content": "Old body",
+            "raw": f"{frontmatter}Old body",
+            "frontmatter": {},
+            "tags": [],
+        }
+        register_memory_tools(server, client)
+
+        await tools["write_memory"](name="test-memory", content="Replacement body")
+
+        written = memory_manager.parse_memory(client.created_notes[path], "test-memory")
+        assert written.content == "Replacement body"
+        assert written.frontmatter["created"] == "original-created"
+        assert written.frontmatter["type"] == "learning"
+        assert written.frontmatter["aliases"] == ["Durable context"]
+
+        client._notes[path] = {
+            "content": "Find this text",
+            "raw": f"{frontmatter}Find this text",
+            "frontmatter": {},
+            "tags": [],
+        }
+
+        await tools["edit_memory"](
+            name="test-memory",
+            search="Find",
+            replace="Keep",
+        )
+
+        edited = memory_manager.parse_memory(client.created_notes[path], "test-memory")
+        assert edited.content == "Keep this text"
+        assert edited.frontmatter["created"] == "original-created"
+        assert edited.frontmatter["type"] == "learning"
+        assert edited.frontmatter["aliases"] == ["Durable context"]
+
+    @pytest.mark.asyncio
     async def test_list_memories_returns_empty(self):
         """list_memories returns empty list when no memories exist."""
         from obsidian_brain.tools.memory import register_memory_tools
@@ -209,6 +286,7 @@ class TestMemoryToolRegistration:
             def decorator(fn):
                 tools[fn.__name__] = fn
                 return fn
+
             return decorator
 
         server.tool = capture_tool
@@ -232,6 +310,7 @@ class TestMemoryToolRegistration:
             def decorator(fn):
                 tools[fn.__name__] = fn
                 return fn
+
             return decorator
 
         server.tool = capture_tool
@@ -269,6 +348,7 @@ class TestMemoryToolRegistration:
             def decorator(fn):
                 tools[fn.__name__] = fn
                 return fn
+
             return decorator
 
         server.tool = capture_tool
@@ -294,6 +374,7 @@ class TestMemoryToolRegistration:
             def decorator(fn):
                 tools[fn.__name__] = fn
                 return fn
+
             return decorator
 
         server.tool = capture_tool
@@ -306,10 +387,13 @@ class TestMemoryToolRegistration:
         assert data["type"] == "MemoryNotFoundError"
 
     @pytest.mark.asyncio
-    async def test_write_memory_cache_invalidation(self):
-        """write_memory invalidates cache after writing."""
-        from obsidian_brain.cache import vault_cache
-        from obsidian_brain.tools.memory import register_memory_tools
+    async def test_higher_level_writes_sync_cached_membership(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        from obsidian_brain.cache import VaultCache
+        from obsidian_brain.knowledge import KNOWLEDGE_BASE_PATH
+        from obsidian_brain.onboarding import CONFIG_PATH, MEMORIES_PATH
+        from obsidian_brain.tools import knowledge, memory, onboarding
 
         server = MagicMock()
         tools = {}
@@ -318,22 +402,41 @@ class TestMemoryToolRegistration:
             def decorator(fn):
                 tools[fn.__name__] = fn
                 return fn
+
             return decorator
 
         server.tool = capture_tool
         client = MockVaultClient()
-        register_memory_tools(server, client)
+        cache = VaultCache()
+        await cache.refresh(client)
+        monkeypatch.setattr(memory, "vault_cache", cache)
+        monkeypatch.setattr(onboarding, "vault_cache", cache)
+        monkeypatch.setattr(knowledge, "vault_cache", cache)
+        memory.register_memory_tools(server, client)
+        onboarding.register_onboarding_tools(server, client)
+        knowledge.register_knowledge_tools(server, client)
 
-        # Mock cache as initialized with invalidate_path
-        with patch.object(type(vault_cache), "is_initialized", new_callable=PropertyMock, return_value=True), \
-             patch.object(vault_cache, "invalidate_path") as mock_invalidate:
-            result = await tools["write_memory"](
-                name="test",
-                content="test content",
-            )
-            data = json.loads(result)
-            assert data["success"] is True
-            mock_invalidate.assert_called_once()
+        memory_path = f"{MEMORIES_PATH}/test.md"
+        result = await tools["write_memory"](name="test", content="test content")
+        assert json.loads(result)["success"] is True
+        assert memory_path in cache.get_file_paths()
+
+        result = await tools["run_onboarding"]()
+        assert json.loads(result)["success"] is True
+        assert {
+            CONFIG_PATH,
+            f"{MEMORIES_PATH}/vault-overview.md",
+            f"{MEMORIES_PATH}/conventions.md",
+        }.issubset(cache.get_file_paths())
+        assert cache.get_note_metadata(CONFIG_PATH) is None
+
+        result = await tools["create_vault_knowledge_base"]()
+        assert json.loads(result)["success"] is True
+        assert KNOWLEDGE_BASE_PATH in cache.get_file_paths()
+
+        result = await tools["delete_memory"](name="test")
+        assert json.loads(result)["success"] is True
+        assert memory_path not in cache.get_file_paths()
 
 
 class TestOnboardingToolRegistration:
@@ -361,6 +464,7 @@ class TestOnboardingToolRegistration:
             def decorator(fn):
                 tools[fn.__name__] = fn
                 return fn
+
             return decorator
 
         server.tool = capture_tool
@@ -370,6 +474,33 @@ class TestOnboardingToolRegistration:
         result = await tools["check_onboarding_status"]()
         data = json.loads(result)
         assert data["onboarded"] is False
+
+    @pytest.mark.asyncio
+    async def test_check_onboarding_finds_yaml_config_outside_markdown_listing(self):
+        """The exact config check must not depend on the Markdown-only file list."""
+        from obsidian_brain.onboarding import CONFIG_PATH
+        from obsidian_brain.tools.onboarding import register_onboarding_tools
+
+        server = MagicMock()
+        tools = {}
+
+        def capture_tool():
+            def decorator(fn):
+                tools[fn.__name__] = fn
+                return fn
+
+            return decorator
+
+        server.tool = capture_tool
+        client = MockVaultClient()
+        client._files = ["Obsidian Brain/memories/conventions.md", "Inbox.md"]
+        client._notes[CONFIG_PATH] = {"content": "version: 1"}
+        register_onboarding_tools(server, client)
+
+        result = await tools["check_onboarding_status"]()
+        data = json.loads(result)
+        assert data["onboarded"] is True
+        assert data["config_path"] == CONFIG_PATH
 
     @pytest.mark.asyncio
     async def test_get_vault_config_not_found(self):
@@ -383,6 +514,7 @@ class TestOnboardingToolRegistration:
             def decorator(fn):
                 tools[fn.__name__] = fn
                 return fn
+
             return decorator
 
         server.tool = capture_tool
@@ -424,6 +556,7 @@ class TestNoObsidianClientImports:
         """tools/knowledge.py has no ObsidianClient references."""
         import inspect
         from obsidian_brain.tools import knowledge
+
         source = inspect.getsource(knowledge)
         assert "ObsidianClient" not in source
 
@@ -431,6 +564,7 @@ class TestNoObsidianClientImports:
         """tools/memory.py has no ObsidianClient references."""
         import inspect
         from obsidian_brain.tools import memory
+
         source = inspect.getsource(memory)
         assert "ObsidianClient" not in source
 
@@ -438,6 +572,7 @@ class TestNoObsidianClientImports:
         """tools/onboarding.py has no ObsidianClient references."""
         import inspect
         from obsidian_brain.tools import onboarding
+
         source = inspect.getsource(onboarding)
         assert "ObsidianClient" not in source
 
@@ -445,6 +580,7 @@ class TestNoObsidianClientImports:
         """resources/structure.py has no ObsidianClient references."""
         import inspect
         from obsidian_brain.resources import structure
+
         source = inspect.getsource(structure)
         assert "ObsidianClient" not in source
 
@@ -452,5 +588,6 @@ class TestNoObsidianClientImports:
         """resources/knowledge.py has no ObsidianClient references."""
         import inspect
         from obsidian_brain.resources import knowledge
+
         source = inspect.getsource(knowledge)
         assert "ObsidianClient" not in source

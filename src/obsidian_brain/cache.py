@@ -7,8 +7,9 @@ The cache must be explicitly refreshed via the refresh_vault_structure tool.
 
 import asyncio
 from datetime import datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
+from .exceptions import NoteNotFoundError
 from .models import (
     FolderNode,
     NoteMetadata,
@@ -26,8 +27,7 @@ class CacheNotInitializedError(Exception):
 
     def __init__(self):
         super().__init__(
-            "Vault structure cache not initialized. "
-            "Call refresh_vault_structure tool first."
+            "Vault structure cache not initialized. Call refresh_vault_structure tool first."
         )
 
 
@@ -40,6 +40,7 @@ class VaultCache:
     - Note metadata (tags, links, frontmatter)
     - Backlink index (computed from outgoing links)
     - Aggregate statistics
+    - Complete vault file paths (including non-Markdown attachments)
 
     Usage:
         cache = VaultCache()
@@ -49,6 +50,7 @@ class VaultCache:
 
     def __init__(self):
         self._structure: VaultStructure | None = None
+        self._file_paths: list[str] = []
         self._lock = asyncio.Lock()
         self._backlink_index: dict[str, list[str]] = {}
 
@@ -70,6 +72,12 @@ class VaultCache:
         if self._structure is None:
             raise CacheNotInitializedError()
         return self._structure
+
+    def get_file_paths(self) -> list[str]:
+        """Get every vault-relative file path from the latest refresh."""
+        if not self.is_initialized:
+            raise CacheNotInitializedError()
+        return self._file_paths
 
     def get_backlinks(self, path: str) -> list[str]:
         """
@@ -119,31 +127,60 @@ class VaultCache:
                 tag_counts[tag] = tag_counts.get(tag, 0) + 1
         return tag_counts
 
-    def invalidate_path(self, path: str) -> None:
-        """
-        Invalidate cached data for a specific note path.
+    async def invalidate_path(self, path: str, *, exists: bool) -> None:
+        """Update membership, dropping cached note data only after deletion."""
+        async with self._lock:
+            self._invalidate_path_unlocked(path, exists=exists)
 
-        Removes the note from the cached structure so stale data isn't served.
-        A full refresh() is needed to get updated data for this path.
-
-        Args:
-            path: Note path to invalidate
-        """
+    def _invalidate_path_unlocked(self, path: str, *, exists: bool) -> None:
+        """Mutate path membership while the caller holds ``_lock``."""
         if self._structure is None:
             return
 
-        # Remove note from cached notes list
-        self._structure.notes = [
-            n for n in self._structure.notes if n.path != path
-        ]
+        if exists:
+            if path not in self._file_paths:
+                self._file_paths.append(path)
+        else:
+            self._file_paths = [item for item in self._file_paths if item != path]
+            self._structure.notes = [note for note in self._structure.notes if note.path != path]
 
-        # Remove from backlink index
-        self._backlink_index.pop(path, None)
+        self._rebuild_derived_state(self._structure)
 
-        # Remove references to this path in other backlink entries
-        for target, sources in self._backlink_index.items():
-            if path in sources:
-                sources.remove(path)
+    async def sync_note(self, client: "VaultClient", path: str) -> None:
+        """Refresh one cached note after a successful vault write."""
+        async with self._lock:
+            if self._structure is None:
+                return
+            if not path.lower().endswith(".md"):
+                self._invalidate_path_unlocked(path, exists=True)
+                return
+
+            try:
+                note_data = await client.get_note(path)
+            except NoteNotFoundError:
+                # The write succeeded, so the file exists even when the app's
+                # index lags. Keep membership but drop the pre-write metadata
+                # rather than serving it as current; deletions come through
+                # invalidate_path(exists=False).
+                if path not in self._file_paths:
+                    self._file_paths.append(path)
+                self._structure.notes = [
+                    note for note in self._structure.notes if note.path != path
+                ]
+                self._rebuild_derived_state(self._structure)
+                return
+
+            note = self._make_note_metadata(path, note_data)
+            for index, existing in enumerate(self._structure.notes):
+                if existing.path == path:
+                    self._structure.notes[index] = note
+                    break
+            else:
+                self._structure.notes.append(note)
+
+            if path not in self._file_paths:
+                self._file_paths.append(path)
+            self._rebuild_derived_state(self._structure)
 
     def get_notes_by_tag(self, tag: str) -> list[str]:
         """
@@ -183,80 +220,71 @@ class VaultCache:
 
     async def _build_structure(self, client: "VaultClient") -> VaultStructure:
         """Internal method to build complete structure."""
-        # Step 1: Get all files via bulk listing (single CLI call)
         file_paths = await client.get_all_files("/")
-
-        # Step 2: Build folder hierarchy from file paths
-        folders = self._build_folder_hierarchy(file_paths)
-
-        # Step 3: Fetch metadata for all markdown files with bounded concurrency
-        md_files = [f for f in file_paths if f.endswith(".md")]
+        md_files = [path for path in file_paths if path.lower().endswith(".md")]
         notes = await self._fetch_notes_concurrent(client, md_files)
 
-        # Step 4: Build backlink index
-        self._backlink_index = self._build_backlink_index(notes, md_files)
-
-        # Step 5: Populate incoming_links from backlink index
-        for note in notes:
-            note.incoming_links = self._backlink_index.get(note.path, [])
-
-        # Step 6: Compute statistics
-        all_tags = set()
-        total_links = 0
-        orphan_count = 0
-
-        for note in notes:
-            all_tags.update(note.tags)
-            total_links += len(note.outgoing_links)
-            if not note.incoming_links and not note.outgoing_links:
-                orphan_count += 1
-
-        stats = VaultStats(
-            total_notes=len(notes),
-            total_folders=len(folders),
-            total_tags=len(all_tags),
-            total_links=total_links,
-            orphan_notes=orphan_count,
-        )
-
-        return VaultStructure(
-            folders=folders,
-            notes=notes,
-            stats=stats,
-            refreshed_at=datetime.now(),
-        )
+        self._file_paths = file_paths
+        structure = VaultStructure(notes=notes, refreshed_at=datetime.now())
+        self._rebuild_derived_state(structure)
+        return structure
 
     async def _fetch_notes_concurrent(
         self, client: "VaultClient", md_files: list[str]
     ) -> list[NoteMetadata]:
         """Fetch note metadata with semaphore-bounded concurrency."""
         semaphore = asyncio.Semaphore(10)
-        notes: list[NoteMetadata] = []
 
         async def fetch_one(file_path: str) -> NoteMetadata | None:
             async with semaphore:
                 try:
-                    note_data = await client.get_note(file_path, include_metadata=True)
-                    content = note_data.get("content", "")
-                    outgoing_links = extract_wikilinks(content)
-                    title = self._extract_title(file_path, content)
-
-                    return NoteMetadata(
-                        path=file_path,
-                        title=title,
-                        tags=note_data.get("tags", []),
-                        outgoing_links=outgoing_links,
-                        incoming_links=[],
-                        frontmatter=note_data.get("frontmatter", {}),
-                        modified=note_data.get("modified"),
-                    )
+                    note_data = await client.get_note(file_path)
+                    return self._make_note_metadata(file_path, note_data)
                 except Exception:
                     return None
 
-        tasks = [fetch_one(fp) for fp in md_files]
-        results = await asyncio.gather(*tasks)
-        notes = [r for r in results if r is not None]
-        return notes
+        results = await asyncio.gather(*(fetch_one(path) for path in md_files))
+        return [note for note in results if note is not None]
+
+    def _make_note_metadata(self, path: str, note_data: dict[str, Any]) -> NoteMetadata:
+        """Build cached metadata from a note read."""
+        content = note_data.get("content", "")
+        return NoteMetadata(
+            path=path,
+            title=self._extract_title(path, content),
+            tags=note_data.get("tags", []),
+            outgoing_links=extract_wikilinks(content),
+            incoming_links=[],
+            frontmatter=note_data.get("frontmatter", {}),
+            modified=note_data.get("modified"),
+        )
+
+    def _rebuild_derived_state(self, structure: VaultStructure) -> None:
+        """Recompute folders, backlinks, incoming links, and aggregate stats."""
+        structure.folders = self._build_folder_hierarchy(self._file_paths)
+        note_paths = [path for path in self._file_paths if path.lower().endswith(".md")]
+        self._backlink_index = self._build_backlink_index(
+            structure.notes,
+            note_paths,
+        )
+
+        all_tags: set[str] = set()
+        total_links = 0
+        orphan_count = 0
+        for note in structure.notes:
+            note.incoming_links = self._backlink_index.get(note.path, [])
+            all_tags.update(note.tags)
+            total_links += len(note.outgoing_links)
+            if not note.incoming_links and not note.outgoing_links:
+                orphan_count += 1
+
+        structure.stats = VaultStats(
+            total_notes=len(structure.notes),
+            total_folders=len(structure.folders),
+            total_tags=len(all_tags),
+            total_links=total_links,
+            orphan_notes=orphan_count,
+        )
 
     def _build_folder_hierarchy(self, file_paths: list[str]) -> list[FolderNode]:
         """Build folder tree from flat file path list."""
@@ -288,45 +316,6 @@ class VaultCache:
                 root_folders.append(node)
 
         return root_folders
-
-    async def _get_directory_tree(
-        self, client: "VaultClient", path: str
-    ) -> dict[str, list]:
-        """
-        Recursively build directory tree and collect files.
-
-        Returns:
-            Dict with 'folders' (list of FolderNode) and 'files' (list of paths)
-        """
-        folders: list[FolderNode] = []
-        files: list[str] = []
-
-        try:
-            entries = await client.list_directory(path)
-        except Exception:
-            return {"folders": folders, "files": files}
-
-        for entry in entries:
-            name = entry["name"]
-            entry_type = entry["type"]
-
-            entry_path = name if path == "/" else f"{path.rstrip('/')}/{name}"
-
-            if entry_type == "folder":
-                # Recurse into subfolder
-                sub_result = await self._get_directory_tree(client, entry_path)
-
-                folder = FolderNode(
-                    name=name,
-                    path=entry_path + "/",
-                    children=sub_result["folders"],
-                )
-                folders.append(folder)
-                files.extend(sub_result["files"])
-            else:
-                files.append(entry_path)
-
-        return {"folders": folders, "files": files}
 
     def _extract_title(self, path: str, content: str) -> str:
         """
@@ -382,9 +371,7 @@ class VaultCache:
 
         return index
 
-    def _resolve_link(
-        self, link: str, name_to_path: dict[str, str]
-    ) -> str | None:
+    def _resolve_link(self, link: str, name_to_path: dict[str, str]) -> str | None:
         """
         Resolve a wikilink to a full path.
 
