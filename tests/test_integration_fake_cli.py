@@ -576,8 +576,21 @@ def _resolve_real_vault_path(vault_name: str) -> Path | None:
     return matches.pop() if len(matches) == 1 else None
 
 
+_DISPOSABLE_SENTINEL = ".obsidian-mcp-disposable"
+
+
 def _real_cli_skip_reason() -> str | None:
-    """Return why the opt-in real-CLI test must skip, or None when it can run."""
+    """Return why the opt-in real-CLI test must skip, or None when it can run.
+
+    This test WRITES to a vault, so the gate fails closed on two explicit
+    signals rather than on a guessable path substring: the operator must set
+    OBSIDIAN_MCP_ALLOW_REAL_VAULT_WRITES=1, and the resolved vault must
+    contain a `.obsidian-mcp-disposable` marker file created by whoever built
+    that throwaway vault. A real vault has neither.
+    """
+    if os.environ.get("OBSIDIAN_MCP_ALLOW_REAL_VAULT_WRITES") != "1":
+        return "OBSIDIAN_MCP_ALLOW_REAL_VAULT_WRITES=1 is not set (this test writes to a vault)"
+
     if _find_real_cli_binary() is None:
         return "no obsidian-cli binary at $OBSIDIAN_CLI_PATH or ~/Applications/obsidian-cli"
 
@@ -592,8 +605,11 @@ def _real_cli_skip_reason() -> str | None:
     if vault_path is None or not vault_path.is_dir():
         return f"OBSIDIAN_VAULT={vault_name!r} does not resolve to exactly one real vault directory"
 
-    if "testvault" not in vault_path.as_posix():
-        return f"resolved vault {vault_path} is not a disposable test vault (missing 'testvault')"
+    if not (vault_path / _DISPOSABLE_SENTINEL).is_file():
+        return (
+            f"resolved vault {vault_path} has no {_DISPOSABLE_SENTINEL} marker file, "
+            "so it is not a declared disposable vault"
+        )
 
     return None
 
@@ -611,18 +627,19 @@ _REAL_CLI_SKIP_REASON = _real_cli_skip_reason()
 async def test_real_server_against_real_cli(monkeypatch: pytest.MonkeyPatch):
     """Opt-in end-to-end run against the real obsidian-cli and a running Obsidian app.
 
-    Only runs when the real CLI, its IPC socket, and OBSIDIAN_VAULT are all
-    present -- see ``_real_cli_skip_reason``. OBSIDIAN_VAULT's raw value is
-    never trusted as a safety signal by itself: it is resolved through
-    Obsidian's own vault registry first, and the run refuses to proceed
-    unless that *resolved* path contains "testvault", so a misconfigured
-    env var can only make this skip, never mutate a real vault.
+    Only runs when the operator has explicitly allowed vault writes, the real
+    CLI and its IPC socket are present, and OBSIDIAN_VAULT resolves through
+    Obsidian's own registry to a directory carrying the
+    ``.obsidian-mcp-disposable`` marker -- see ``_real_cli_skip_reason``. The
+    env var is never trusted as a safety signal by itself, so a misconfigured
+    value can only make this skip, never mutate a real vault.
     """
     binary = _find_real_cli_binary()
     vault_name = os.environ["OBSIDIAN_VAULT"]
     vault_path = _resolve_real_vault_path(vault_name)
     assert binary is not None
-    assert vault_path is not None and "testvault" in vault_path.as_posix()
+    assert vault_path is not None
+    assert (vault_path / _DISPOSABLE_SENTINEL).is_file()
 
     import obsidian_brain.cli_client as cli_module
     from obsidian_brain.cache import vault_cache

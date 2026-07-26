@@ -53,6 +53,9 @@ ignore = ["E501"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# The real_cli test writes to a live vault, so it never runs by accident:
+# opt in with `pytest -m real_cli` plus OBSIDIAN_MCP_ALLOW_REAL_VAULT_WRITES=1.
+addopts = "-m 'not real_cli'"
 
 [tool.mypy]
 python_version = "3.12"

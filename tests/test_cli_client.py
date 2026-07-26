@@ -698,6 +698,35 @@ class TestExecutableCLIContract:
         assert 'Error: File "missing.md" not found.' in note["content"]
 
     @pytest.mark.asyncio
+    async def test_one_line_note_starting_with_error_is_content_not_a_failure(
+        self, fake_cli, monkeypatch
+    ):
+        """A note whose ENTIRE body is an `Error: …` line is still a note."""
+        executable, _calls = fake_cli
+        monkeypatch.setenv("FAKE_OBSIDIAN_STDOUT", "Error: retry later\n")
+        client = ObsidianCLIClient(cli_path=executable)
+
+        note = await client.get_note("Snippets/Retry.md")
+
+        assert note["content"].strip() == "Error: retry later"
+
+    @pytest.mark.asyncio
+    async def test_single_listing_or_search_line_starting_with_error_is_data(
+        self, fake_cli, monkeypatch
+    ):
+        """`files` and `search:context` output is user data, not a status line."""
+        executable, _calls = fake_cli
+        monkeypatch.setenv("FAKE_OBSIDIAN_STDOUT", "Error: retry later.md\n")
+        client = ObsidianCLIClient(cli_path=executable)
+
+        assert await client.get_all_files() == ["Error: retry later.md"]
+
+        monkeypatch.setenv("FAKE_OBSIDIAN_STDOUT", "Error: retry later.md:3: hit\n")
+        assert await client.search_simple("hit") == [
+            {"path": "Error: retry later.md", "matches": ["hit"], "score": 0.0}
+        ]
+
+    @pytest.mark.asyncio
     async def test_search_no_matches_found_yields_empty_list(self, fake_cli, monkeypatch):
         executable, _calls = fake_cli
         monkeypatch.setenv("FAKE_OBSIDIAN_STDOUT", "No matches found.\n")
