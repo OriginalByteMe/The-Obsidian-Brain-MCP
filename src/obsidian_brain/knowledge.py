@@ -16,7 +16,7 @@ if TYPE_CHECKING:
     from .protocol import VaultClient
 
 # Fixed path within the vault for the knowledge base
-KNOWLEDGE_BASE_PATH = ".obsidian-brain/knowledge-base.md"
+KNOWLEDGE_BASE_PATH = "Obsidian Brain/knowledge-base.md"
 
 
 class KnowledgeBaseManager:
@@ -248,8 +248,7 @@ vault_stats:
     def _build_orphan_notes(self, notes: list[NoteMetadata]) -> str:
         """Build the orphan notes section."""
         orphans = [
-            note.path for note in notes
-            if not note.incoming_links and not note.outgoing_links
+            note.path for note in notes if not note.incoming_links and not note.outgoing_links
         ]
 
         lines = ["## Orphan Notes", ""]

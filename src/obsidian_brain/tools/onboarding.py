@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 
 from ..cache import CacheNotInitializedError, vault_cache
 from ..exceptions import NoteNotFoundError
-from ..onboarding import CONFIG_PATH, MEMORIES_PATH, onboarding_manager
+from ..onboarding import CONFIG_PATH, MEMORIES_PATH, extract_yaml_body, onboarding_manager
 from .errors import OPERATIONAL_ERRORS, error_json
 
 if TYPE_CHECKING:
@@ -28,7 +28,7 @@ def register_onboarding_tools(server, client: VaultClient) -> None:
         Check if this vault has been onboarded.
 
         Onboarding creates the visible `Obsidian Brain/` folder with:
-        - config.yml: Vault profile and detected patterns
+        - config.md: Vault profile and detected patterns (YAML in a fenced code block)
         - memories/: Persistent memory files for cross-session context
 
         Returns:
@@ -62,7 +62,7 @@ def register_onboarding_tools(server, client: VaultClient) -> None:
         5. Detects naming patterns
 
         Creates:
-        - `Obsidian Brain/config.yml` - Vault profile and patterns
+        - `Obsidian Brain/config.md` - Vault profile and patterns (YAML content)
         - `Obsidian Brain/memories/vault-overview.md` - Structure overview
         - `Obsidian Brain/memories/conventions.md` - Usage guidelines
 
@@ -98,20 +98,20 @@ def register_onboarding_tools(server, client: VaultClient) -> None:
         try:
             files_created = []
 
-            # Create config.yml
-            await client.create_note(CONFIG_PATH, config_content)
+            # Create config.md
+            await client.update_note(CONFIG_PATH, config_content)
             await vault_cache.sync_note(client, CONFIG_PATH)
             files_created.append(CONFIG_PATH)
 
             # Create vault-overview memory
             overview_path = f"{MEMORIES_PATH}/vault-overview.md"
-            await client.create_note(overview_path, overview_memory)
+            await client.update_note(overview_path, overview_memory)
             await vault_cache.sync_note(client, overview_path)
             files_created.append(overview_path)
 
             # Create conventions memory
             conventions_path = f"{MEMORIES_PATH}/conventions.md"
-            await client.create_note(conventions_path, conventions_memory)
+            await client.update_note(conventions_path, conventions_memory)
             await vault_cache.sync_note(client, conventions_path)
             files_created.append(conventions_path)
 
@@ -157,7 +157,7 @@ def register_onboarding_tools(server, client: VaultClient) -> None:
         """
         try:
             data = await client.get_note(CONFIG_PATH)
-            content = data.get("content", "")
+            content = extract_yaml_body(data.get("content", ""))
 
             return json.dumps(
                 {

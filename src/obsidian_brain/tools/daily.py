@@ -13,7 +13,7 @@ from ..cache import vault_cache
 from ..exceptions import NoteNotFoundError
 from ..protocol import VaultClient
 from ..utils.wikilinks import create_wikilink
-from .errors import OPERATIONAL_ERRORS, error_json
+from .errors import OPERATIONAL_ERRORS, dumps, error_json
 
 
 def register_daily_tools(server: FastMCP, client: VaultClient) -> None:
@@ -36,11 +36,17 @@ def register_daily_tools(server: FastMCP, client: VaultClient) -> None:
         Uses Obsidian's daily notes feature which requires the
         Daily Notes plugin to be configured.
 
+        Note: reading CREATES the note when it does not exist yet -- that is
+        the Daily Notes plugin's own behavior, verified against the real CLI
+        (`daily:read` on a missing note prints nothing and leaves a new empty
+        note behind). So an empty "content" means the note is empty, and a
+        missing daily note is not observable through this tool.
+
         Args:
             date: Optional date in YYYY-MM-DD format (default: today)
 
         Returns:
-            JSON with daily note content and metadata
+            JSON with daily note content and metadata.
         """
         # Use today if no date specified
         if not date:
@@ -61,21 +67,13 @@ def register_daily_tools(server: FastMCP, client: VaultClient) -> None:
         try:
             data = await client.get_daily_note(date)
 
-            return json.dumps(
+            return dumps(
                 {
                     "success": True,
                     "date": date,
                     "content": data.get("content", ""),
                     "tags": data.get("tags", []),
                     "frontmatter": data.get("frontmatter", {}),
-                }
-            )
-        except NoteNotFoundError:
-            return json.dumps(
-                {
-                    "error": True,
-                    "type": "NoteNotFoundError",
-                    "message": f"Daily note not found for {date}",
                 }
             )
         except OPERATIONAL_ERRORS as error:
@@ -90,8 +88,8 @@ def register_daily_tools(server: FastMCP, client: VaultClient) -> None:
         """
         Append content to today's daily note.
 
-        If the daily note doesn't exist, it may be created (depending on
-        Obsidian plugin settings).
+        Appending auto-creates the daily note first if it doesn't exist yet --
+        Obsidian's `daily:append` command creates it at the configured location.
 
         Args:
             content: Content to append
@@ -144,14 +142,6 @@ def register_daily_tools(server: FastMCP, client: VaultClient) -> None:
                     "date": date,
                     "heading": heading,
                     "message": f"Appended to daily note for {date}",
-                }
-            )
-        except NoteNotFoundError:
-            return json.dumps(
-                {
-                    "error": True,
-                    "type": "NoteNotFoundError",
-                    "message": f"Daily note not found for {date}. It may need to be created first.",
                 }
             )
         except OPERATIONAL_ERRORS as error:
@@ -239,14 +229,6 @@ def register_daily_tools(server: FastMCP, client: VaultClient) -> None:
                     "tags": tags,
                     "links": links,
                     "message": f"Created entry in daily note for {date}",
-                }
-            )
-        except NoteNotFoundError:
-            return json.dumps(
-                {
-                    "error": True,
-                    "type": "NoteNotFoundError",
-                    "message": f"Daily note not found for {date}. It may need to be created first.",
                 }
             )
         except OPERATIONAL_ERRORS as error:

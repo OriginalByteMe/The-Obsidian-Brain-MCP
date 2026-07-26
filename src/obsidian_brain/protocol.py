@@ -75,12 +75,19 @@ class VaultClient(Protocol):
         """
         ...
 
-    async def create_note(self, path: str, content: str) -> None:
+    async def create_note(self, path: str, content: str) -> str:
         """Create a new note.
 
         Args:
             path: Path for the note.
             content: Full note content including frontmatter.
+
+        Returns:
+            The vault-relative path Obsidian actually created the note
+            at. Obsidian dedupes an existing target instead of failing
+            or overwriting it -- creating "Note.md" when it already
+            exists creates "Note 1.md" and leaves the original
+            untouched.
         """
         ...
 

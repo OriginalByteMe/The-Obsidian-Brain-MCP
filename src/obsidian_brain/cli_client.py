@@ -31,41 +31,49 @@ from .parsers import (
 
 # Match only the known startup message, not arbitrary timestamped note content.
 _OBSIDIAN_LOG_RE = re.compile(
-    r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} Load(?:ed|ing) updated app package(?: .*)?$"
+    r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} Load(?:ed|ing) (?:main|updated) app package(?: .*)?$"
 )
-_ENOENT_RE = re.compile(r"\bENOENT\b", re.IGNORECASE)
-_ENOENT_PATH_RE = re.compile(r"open\s+['\"](?P<path>[^'\"]+)['\"]", re.IGNORECASE)
-_NOTE_TARGET_COMMANDS = frozenset({"read", "append", "delete"})
 _OBSIDIAN_RUNNING_TTL = 5.0
 _clock = time.monotonic
 _obsidian_running_until = 0.0
 
+# The real Obsidian CLI always exits 0 and reports failures as a single
+# line of stdout instead of via returncode/stderr, so these classify it.
+_NOTE_NOT_FOUND_RE = re.compile(r'^Error: File "(?P<path>.+)" not found\.$')
+_VAULT_NOT_FOUND_RE = re.compile(r"^Vault not found\.$")
+_GENERIC_ERROR_RE = re.compile(r"^Error: .+$")
+_CREATE_RESULT_RE = re.compile(r"^(?:Created|Overwrote): (?P<path>.+)$", re.MULTILINE)
+# Commands whose successful stdout is user data (note bodies, vault-relative
+# paths, search hits), where a line like "Error: …" may be the data itself.
+# Only the specific known failure shapes are classified for these.
+_DATA_COMMANDS = frozenset({"read", "daily:read", "files", "search:context", "search"})
 
-def _is_missing_note(stderr: str, target_path: str) -> bool:
-    """Classify an ENOENT failure only when stderr names the targeted note."""
-    if not _ENOENT_RE.search(stderr):
-        return False
-    target = re.escape(str(PurePosixPath(target_path)))
-    # Require path-segment boundaries so "other-note.md" never matches "note.md".
-    return (
-        re.search(rf"(?:^|[\s'\"/]){target}(?:$|[\s'\",;)])", stderr.replace("\\", "/")) is not None
-    )
 
+def _classify_stdout_error(
+    output: str, args: tuple[str, ...], command: list[str]
+) -> ObsidianCLIError | None:
+    """Classify a whole-output stdout error line from a successful (exit 0) run.
 
-def _missing_note_path(args: tuple[str, ...], stderr: str) -> str | None:
-    """Return the missing note's path when the failure is a file ENOENT."""
-    if not args:
-        return None
-    command = args[0]
-    target = next((arg.removeprefix("path=") for arg in args if arg.startswith("path=")), None)
+    Matching is against the ENTIRE trimmed output, never a substring: a
+    note's own content may legitimately contain text that looks like one
+    of these messages, and only a whole-line match can tell that apart
+    from a real CLI-reported failure.
+    """
+    stripped = output.strip()
 
-    if command in _NOTE_TARGET_COMMANDS and target is not None:
-        return target if _is_missing_note(stderr, target) else None
+    not_found = _NOTE_NOT_FOUND_RE.match(stripped)
+    if not_found:
+        target = next((arg.removeprefix("path=") for arg in args if arg.startswith("path=")), None)
+        if not_found.group("path") == target:
+            return NoteNotFoundError(not_found.group("path"), command=command)
 
-    # Daily commands resolve their own target, so trust the ENOENT itself.
-    if command.startswith("daily:") and _ENOENT_RE.search(stderr):
-        named = _ENOENT_PATH_RE.search(stderr)
-        return named.group("path") if named else "daily note"
+    if _VAULT_NOT_FOUND_RE.match(stripped):
+        return ObsidianCLIError(returncode=0, stderr=stripped, command=command)
+
+    # For data commands the whole output can legitimately be text starting with
+    # "Error: ", so only the specific shapes above classify there.
+    if args and args[0] not in _DATA_COMMANDS and _GENERIC_ERROR_RE.match(stripped):
+        return ObsidianCLIError(returncode=0, stderr=stripped, command=command)
 
     return None
 
@@ -194,8 +202,10 @@ class ObsidianCLIClient:
             Decoded stdout string.
 
         Raises:
-            ObsidianCLIError: On non-zero exit code.
-            CLITimeoutError: If command exceeds timeout.
+            ObsidianCLIError: On non-zero exit, non-empty stderr, or a
+                recognized stdout error line -- the real CLI always exits 0
+                and reports failures as a line of stdout.
+            NoteNotFoundError: When stdout reports the targeted note missing.
         """
         cli_path = self.cli_path
         if cli_path is None:
@@ -230,18 +240,19 @@ class ObsidianCLIClient:
             proc.kill()
             raise CLITimeoutError(timeout=effective_timeout, command=cmd)
 
-        if proc.returncode != 0:
-            stderr_text = stderr.decode().strip()
-            missing = _missing_note_path(args, stderr_text)
-            if missing is not None:
-                raise NoteNotFoundError(missing, command=cmd)
+        stderr_text = stderr.decode().strip()
+        if proc.returncode != 0 or stderr_text:
             raise ObsidianCLIError(
                 returncode=proc.returncode,
                 stderr=stderr_text,
                 command=cmd,
             )
 
-        return _filter_log_lines(stdout.decode())
+        cleaned = _filter_log_lines(stdout.decode())
+        error = _classify_stdout_error(cleaned, args, cmd)
+        if error is not None:
+            raise error
+        return cleaned
 
     # -------------------------------------------------------------------------
     # Directory Operations
@@ -255,23 +266,16 @@ class ObsidianCLIClient:
         return [line.strip() for line in output.strip().splitlines() if line.strip()]
 
     async def list_directory(self, path: str = "/") -> list[dict[str, Any]]:
-        """List files and folders at the specified path.
+        """List every file recursively under the specified path.
 
         Note: The Obsidian CLI ``files`` command returns plain text
-        (one entry per line), not JSON.  We use ``_run`` and parse
-        the text output directly.
+        (one vault-relative file path per line), not JSON, and it
+        recurses through subfolders. It never lists folders or emits a
+        trailing slash, so every entry is a file; the ``name``/``type``
+        dict shape is kept for callers, with ``type`` always ``"file"``.
         """
         lines = await self._get_file_lines(path)
-        result = []
-        for entry in lines:
-            is_folder = entry.endswith("/")
-            result.append(
-                {
-                    "name": entry.rstrip("/"),
-                    "type": "folder" if is_folder else "file",
-                }
-            )
-        return result
+        return [{"name": entry, "type": "file"} for entry in lines]
 
     async def get_all_files(self, path: str = "/") -> list[str]:
         """Get every file path under a directory, regardless of extension.
@@ -307,10 +311,20 @@ class ObsidianCLIClient:
         except NoteNotFoundError:
             return False
 
-    async def create_note(self, path: str, content: str) -> None:
-        """Create a new note at an exact vault-relative path."""
+    async def create_note(self, path: str, content: str) -> str:
+        """Create a new note at an exact vault-relative path.
+
+        Returns the vault-relative path Obsidian actually created,
+        parsed from its ``Created: <path>``/``Overwrote: <path>`` stdout
+        line (falling back to the requested ``path`` if that line is
+        absent). Obsidian dedupes an existing target instead of failing
+        or overwriting it -- creating "Note.md" a second time creates
+        "Note 1.md" and leaves the original file untouched.
+        """
         _validate_path(path)
-        await self._run("create", f"path={path}", f"content={content}")
+        output = await self._run("create", f"path={path}", f"content={content}")
+        match = _CREATE_RESULT_RE.search(output)
+        return match.group("path").strip() if match else path
 
     async def update_note(self, path: str, content: str) -> None:
         """Replace a note's entire content."""

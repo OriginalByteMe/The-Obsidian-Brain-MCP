@@ -79,7 +79,7 @@ class VaultClient(Protocol):
     async def get_all_files(self, path: str = "/") -> list[str]: ...
     async def get_note(self, path: str, include_metadata: bool = True) -> dict[str, Any]: ...
     async def note_exists(self, path: str) -> bool: ...
-    async def create_note(self, path: str, content: str) -> None: ...
+    async def create_note(self, path: str, content: str) -> str: ...  # returns the actual created path
     async def update_note(self, path: str, content: str) -> None: ...
     async def append_to_note(self, path: str, content: str) -> None: ...
     async def delete_note(self, path: str) -> None: ...
@@ -92,8 +92,8 @@ class VaultClient(Protocol):
 
 | VaultClient Method | CLI Command |
 |---|---|
-| `list_directory` | `obsidian files [folder="{path}"]` |
-| `get_all_files` | `obsidian files [folder="{path}"]` |
+| `list_directory` | `obsidian files [folder="{path}"]` (recursive; never returns folders) |
+| `get_all_files` | `obsidian files [folder="{path}"]` (recursive; never returns folders) |
 | `get_note` | `obsidian read path="{path}"` |
 | `note_exists` | `obsidian read path="{path}"` (check return code) |
 | `create_note` | `obsidian create path="{path}" content="{content}"` |
@@ -126,7 +126,7 @@ frontmatter is present). Frontmatter is parsed by the installed
 | `OBSIDIAN_CLI_PATH` | No | auto-detected | Executable path when `obsidian` is not on `PATH` |
 | `OBSIDIAN_VAULT` | No | CLI default/active vault | Exact Obsidian vault name, not a filesystem path |
 
-The Obsidian desktop app must be running with the CLI enabled under **Settings > General > Command line interface**. The `obsidian` executable must be available on `PATH` or specified with `OBSIDIAN_CLI_PATH`. Onboarding writes the vault profile to the visible `Obsidian Brain/config.yml` path.
+The Obsidian desktop app must be running with the CLI enabled under **Settings > General > Command line interface**. The `obsidian` executable must be available on `PATH` or specified with `OBSIDIAN_CLI_PATH`. Onboarding writes the vault profile to `Obsidian Brain/config.md` (fenced YAML in a Markdown note): the CLI's `create` command forces the `.md` extension and cannot write into dot-folders, so a `.yml` or `.obsidian-brain/` target can never exist.
 
 ---
 
@@ -194,6 +194,16 @@ class VaultCache:
 ---
 
 ## Error Handling
+
+### CLI Error Reporting
+
+The Obsidian CLI always exits 0 and never writes to stderr, even on
+failure -- it reports errors as plain text on stdout (e.g.
+`Error: File "Note.md" not found.`, `Vault not found.`). `ObsidianCLIClient._run`
+classifies failures by matching the CLI's whole trimmed stdout against known
+error lines (never a substring match, to avoid misfiring on note content that
+happens to contain the words "Error:"); a non-zero exit code or stderr text is
+still treated as a failure too, as a fallback for other CLI builds/versions.
 
 ### Exception Hierarchy
 

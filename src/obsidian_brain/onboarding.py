@@ -21,8 +21,23 @@ if TYPE_CHECKING:
     from .protocol import VaultClient
 
 # Keep generated files visible in Obsidian and address them by vault-relative path.
-CONFIG_PATH = "Obsidian Brain/config.yml"
+# The CLI rewrites any non-.md extension to .md, so the config lives at a .md
+# path with YAML content (wrapped in a ```yaml fence so Obsidian renders it).
+CONFIG_PATH = "Obsidian Brain/config.md"
 MEMORIES_PATH = "Obsidian Brain/memories"
+
+_YAML_FENCE_RE = re.compile(r"^```yaml\s*\n(.*?)\n?```$", re.DOTALL)
+
+
+def extract_yaml_body(content: str) -> str:
+    """Return the bare YAML text from config content, fence or no fence.
+
+    Generated config files wrap their YAML in a ```yaml fence so Obsidian
+    renders them sanely. A hand-edited config may drop the fence entirely;
+    both forms must parse the same way.
+    """
+    match = _YAML_FENCE_RE.match(content.strip())
+    return match.group(1) if match else content
 
 
 @dataclass
@@ -61,7 +76,7 @@ class OnboardingManager:
     The onboarding process:
     1. Check if the Obsidian Brain/ folder exists
     2. If not, analyze the vault to learn patterns
-    3. Create config.yml with vault profile
+    3. Create config.md with vault profile (YAML content in a fenced code block)
     4. Generate initial memories about vault structure
     """
 
@@ -95,7 +110,7 @@ class OnboardingManager:
                 "onboarded": False,
                 "partial": True,
                 "message": (
-                    "Obsidian Brain folder exists but config.yml not found. "
+                    "Obsidian Brain folder exists but config.md not found. "
                     "Run onboarding to complete setup."
                 ),
             }
@@ -322,7 +337,7 @@ class OnboardingManager:
 
     def generate_config(self, analysis: VaultAnalysis) -> str:
         """
-        Generate config.yml content from vault analysis.
+        Generate config.md content (YAML wrapped in a ```yaml fence) from vault analysis.
 
         Args:
             analysis: Completed vault analysis
@@ -356,7 +371,8 @@ class OnboardingManager:
             },
         }
 
-        return yaml.dump(config, default_flow_style=False, sort_keys=False)
+        yaml_text = yaml.dump(config, default_flow_style=False, sort_keys=False)
+        return f"```yaml\n{yaml_text}```\n"
 
     def generate_vault_overview_memory(self, analysis: VaultAnalysis) -> str:
         """

@@ -66,18 +66,23 @@ def register_vault_tools(server: FastMCP, client: VaultClient) -> None:
     @server.tool()
     async def list_vault_files(path: str = "/") -> str:
         """
-        List all files and folders at the specified vault path.
+        List files at the specified vault path, recursively.
+
+        The Obsidian CLI's underlying `files` command walks every nested
+        subfolder under `path` and lists only files -- it never returns
+        folders as separate entries, and paths are vault-relative (e.g.
+        "Areas/Log.md" appears when listing "Areas" or the root).
 
         Args:
             path: Relative path in vault (default: root "/")
 
         Returns:
-            JSON array of file/folder entries with names and types
+            JSON array of file entries; every entry's type is "file"
             Failures return {"error": true, "type": "<exception>", "message": "<details>"}.
         """
         try:
             entries = await client.list_directory(path)
-            result = [FileEntry(name=e["name"], type=e["type"]).model_dump() for e in entries]
+            result = [FileEntry(name=e["name"], type="file").model_dump() for e in entries]
             return json.dumps(result, indent=2)
         except OPERATIONAL_ERRORS as error:
             return error_json(error)
@@ -134,14 +139,21 @@ def register_vault_tools(server: FastMCP, client: VaultClient) -> None:
         The title is auto-generated from the filename. Backlinks are validated
         to ensure target notes exist before being added.
 
+        Note: if a note already exists at `path`, Obsidian does not overwrite
+        or fail -- it dedupes by creating the note at a different path (e.g.
+        "Note 1.md"). The response's "path" is always the actual path Obsidian
+        used, which may differ from the requested one.
+
         Args:
-            path: Path for new note (e.g., "Research/AI Safety.md")
+            path: Requested path for the new note (e.g., "Research/AI Safety.md")
             content: Main content body (without frontmatter or title)
             tags: List of tags to add to frontmatter (optional)
             backlinks: List of note names to link to - validated for existence (optional)
 
         Returns:
-            Confirmation message with created note path
+            Confirmation message with the actual created note path. If Obsidian
+            deduped the path, the message says so explicitly instead of
+            claiming the requested path was created.
             Failures return {"error": true, "type": "<exception>", "message": "<details>"}.
 
         """
@@ -189,16 +201,24 @@ def register_vault_tools(server: FastMCP, client: VaultClient) -> None:
             note_content = inject_wikilink(note_content, link)
 
         try:
-            await client.create_note(path, note_content)
-            await vault_cache.sync_note(client, path)
+            created_path = await client.create_note(path, note_content)
+            await vault_cache.sync_note(client, created_path)
         except OPERATIONAL_ERRORS as error:
             return error_json(error)
+
+        if created_path == path:
+            message = f"Created note: {created_path}"
+        else:
+            message = (
+                f'Obsidian deduped the note: "{path}" already existed, '
+                f'so it created "{created_path}" instead.'
+            )
 
         return json.dumps(
             {
                 "success": True,
-                "path": path,
-                "message": f"Created note: {path}",
+                "path": created_path,
+                "message": message,
                 "tags": tags,
                 "backlinks": backlinks,
             }

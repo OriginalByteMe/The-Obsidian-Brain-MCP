@@ -14,7 +14,7 @@ from ..cache import vault_cache
 from ..exceptions import NoteNotFoundError
 from ..memory import memory_manager
 from ..onboarding import MEMORIES_PATH
-from .errors import OPERATIONAL_ERRORS, error_json
+from .errors import OPERATIONAL_ERRORS, dumps, error_json
 
 if TYPE_CHECKING:
     from ..protocol import VaultClient
@@ -28,7 +28,7 @@ def register_memory_tools(server, client: VaultClient) -> None:
         """
         List all available memories in the vault.
 
-        Memories are persistent markdown files stored in `.obsidian-brain/memories/`
+        Memories are persistent markdown files stored in `Obsidian Brain/memories/`
         that provide cross-session context.
 
         Returns:
@@ -62,7 +62,7 @@ def register_memory_tools(server, client: VaultClient) -> None:
                     # Skip if file was deleted between listing and reading
                     pass
 
-            return json.dumps(
+            return dumps(
                 {
                     "count": len(memories),
                     "memories": memories,
@@ -100,7 +100,7 @@ def register_memory_tools(server, client: VaultClient) -> None:
                 name,
             )
 
-            return json.dumps(
+            return dumps(
                 {
                     "name": name,
                     "path": path,
@@ -166,7 +166,7 @@ def register_memory_tools(server, client: VaultClient) -> None:
                 )
                 action = "created"
 
-            await client.create_note(path, full_content)
+            await client.update_note(path, full_content)
 
             await vault_cache.sync_note(client, path)
 
@@ -279,7 +279,7 @@ def register_memory_tools(server, client: VaultClient) -> None:
 
             # Update the memory with new content
             full_content = memory_manager.update_memory_content(raw_content, new_content)
-            await client.create_note(path, full_content)
+            await client.update_note(path, full_content)
 
             await vault_cache.sync_note(client, path)
 
