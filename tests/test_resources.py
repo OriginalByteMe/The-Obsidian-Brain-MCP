@@ -23,7 +23,9 @@ class FakeNoteClient:
     def __init__(self) -> None:
         self.notes: dict[str, str] = {
             "Inbox.md": "# Inbox\n",
-            "Projects/Nested Plan.md": "# Nested Plan\n\nShip it.\n",
+            "Projects/Nested Plan.md": (
+                "---\ntags:\n  - project\naliases:\n  - Plan\n---\n# Nested Plan\n\nShip it.\n"
+            ),
             "Hidden.md": "# Not in the cache\n",
         }
         self.read_paths: list[str] = []
@@ -32,7 +34,10 @@ class FakeNoteClient:
         self.read_paths.append(path)
         if path not in self.notes:
             raise NoteNotFoundError(path)
-        return {"path": path, "content": self.notes[path]}
+        raw = self.notes[path]
+        # Mirror the real client: body in `content`, whole file in `raw`.
+        body = raw.split("---\n", 2)[-1] if raw.startswith("---\n") else raw
+        return {"path": path, "content": body, "raw": raw}
 
 
 @pytest.fixture
@@ -161,7 +166,10 @@ async def test_reads_cached_index_and_nested_note_over_protocol(
     note_result = await session.read_resource(AnyUrl("vault://note/Projects%2FNested%20Plan.md"))
     note_content = note_result.contents[0]
     assert isinstance(note_content, TextResourceContents)
-    assert note_content.text == "# Nested Plan\n\nShip it.\n"
+    # The resource must serve the file verbatim, frontmatter included.
+    assert note_content.text == (
+        "---\ntags:\n  - project\naliases:\n  - Plan\n---\n# Nested Plan\n\nShip it.\n"
+    )
     assert note_content.mimeType == "text/markdown"
     assert client.read_paths == ["Projects/Nested Plan.md"]
 

@@ -195,6 +195,31 @@ class TestVaultTools:
             "## Notes\nNew item\nExisting item",
         )
 
+    @pytest.mark.parametrize(
+        "existing",
+        [
+            "## Notes",
+            "  ## Notes",
+            "## Notes ##",
+            "##   Notes   ",
+        ],
+    )
+    @pytest.mark.anyio
+    async def test_append_heading_matches_valid_atx_variants(self, setup, existing):
+        """Indented, padded and closed ATX forms are the same heading."""
+        server, client = setup
+        current = f"# Title\n\n{existing}\nExisting item\n"
+        client.get_note.return_value = {"content": current, "raw": current}
+
+        await server.call_tool(
+            "append_to_note",
+            {"path": "test.md", "content": "New item", "heading": "## Notes"},
+        )
+
+        written = client.update_note.await_args[0][1]
+        assert written.count("Notes") == 1
+        assert written == f"# Title\n\n{existing}\nNew item\nExisting item\n"
+
     @pytest.mark.anyio
     async def test_writes_sync_cached_notes_and_remove_deletions(self, setup, monkeypatch):
         from obsidian_brain.tools import vault as vault_tools

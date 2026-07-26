@@ -196,7 +196,8 @@ async def test_real_server_against_fake_cli(tmp_path: Path, monkeypatch: pytest.
         assert root_sibling.read_text(encoding="utf-8") == "# Root sibling\n\nneedle root\n"
         assert nested.read_text(encoding="utf-8") == replacement
         after_update = await session.read_resource(_note_uri("Projects/Same.md"))
-        assert _resource_text(after_update) == body
+        # The resource serves the file as-is, frontmatter included.
+        assert _resource_text(after_update) == replacement
 
         appended = _tool_json(
             await session.call_tool(
@@ -210,10 +211,6 @@ async def test_real_server_against_fake_cli(tmp_path: Path, monkeypatch: pytest.
         )
         assert appended["success"] is True
         edited = nested.read_text(encoding="utf-8")
-        expected_body = body.replace(
-            "## Notes\nExisting",
-            "## Notes\ninserted under real heading\nExisting",
-        )
         expected_edit = replacement.replace(
             "## Notes\nExisting",
             "## Notes\ninserted under real heading\nExisting",
@@ -221,7 +218,7 @@ async def test_real_server_against_fake_cli(tmp_path: Path, monkeypatch: pytest.
         assert edited == expected_edit
         assert root_sibling.read_text(encoding="utf-8") == "# Root sibling\n\nneedle root\n"
         after_append = await session.read_resource(_note_uri("Projects/Same.md"))
-        assert _resource_text(after_append) == expected_body
+        assert _resource_text(after_append) == expected_edit
         listed_tags = _tool_json(await session.call_tool("list_all_tags", {}))
         assert listed_tags == {
             "success": True,

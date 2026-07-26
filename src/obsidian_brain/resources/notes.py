@@ -68,7 +68,7 @@ def register_note_resources(server, client: VaultClient) -> None:
 
     @server.resource("vault://note/{path}", mime_type="text/markdown")
     async def vault_note(path: str) -> str:
-        """Read current Markdown content for a validated vault-relative path."""
+        """Read the note's full Markdown, frontmatter included."""
         note_path = _decode_note_path(path)
         note = await client.get_note(note_path)
-        return note.get("content", "")
+        return note.get("raw", note.get("content", ""))

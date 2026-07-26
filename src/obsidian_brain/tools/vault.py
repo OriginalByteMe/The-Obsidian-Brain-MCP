@@ -19,11 +19,24 @@ from .errors import OPERATIONAL_ERRORS, error_json
 
 
 _FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
-_HEADING_RE = re.compile(r"^ {0,3}#{1,6}(?:[ \t]+|$)")
+# Optional indent, 1-6 hashes, the text, and an optional closing hash run.
+_HEADING_RE = re.compile(r"^ {0,3}(?P<hashes>#{1,6})(?:[ \t]+(?P<text>.*?))?(?:[ \t]+#+)?[ \t]*$")
+
+
+def _normalize_heading(line: str) -> tuple[int, str] | None:
+    """Return (level, text) for an ATX heading line, else None."""
+    match = _HEADING_RE.match(line)
+    if match is None:
+        return None
+    return len(match.group("hashes")), (match.group("text") or "").strip()
 
 
 def _find_heading(content: str, heading: str) -> int | None:
-    """Return the end offset of an exact ATX heading outside fenced code."""
+    """Return the end offset of the requested ATX heading, outside fenced code."""
+    target = _normalize_heading(heading)
+    if target is None:
+        return None
+
     fence: tuple[str, int] | None = None
     offset = 0
 
@@ -39,7 +52,7 @@ def _find_heading(content: str, heading: str) -> int | None:
             offset += len(line)
             continue
 
-        if fence is None and text == heading and _HEADING_RE.match(text):
+        if fence is None and _normalize_heading(text) == target:
             return offset + len(text)
 
         offset += len(line)
