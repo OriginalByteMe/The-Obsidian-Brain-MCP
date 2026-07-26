@@ -100,6 +100,12 @@ def _classify_stdout_error(
     if _VAULT_NOT_FOUND_RE.match(stripped):
         return ObsidianCLIError(returncode=0, stderr=_VAULT_NOT_FOUND_MESSAGE, command=command)
 
+    # Deliberately classified even for data commands. The residual false
+    # positive -- a note whose ENTIRE body is this exact line, naming the very
+    # command being invoked -- is vanishingly rare and fails loudly. Deciding
+    # it by "the retry returned the same text" would not work: a slow vault
+    # boot repeats the payload too, and mistaking that for note content is the
+    # sentinel-served-as-data bug this rule exists to prevent.
     command_not_found = _COMMAND_NOT_FOUND_RE.match(stripped)
     if command_not_found and args and command_not_found.group("command") == args[0]:
         return ObsidianCLIError(returncode=0, stderr=stripped, command=command)
