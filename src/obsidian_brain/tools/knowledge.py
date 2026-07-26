@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 from ..cache import CacheNotInitializedError, vault_cache
 from ..exceptions import NoteNotFoundError
 from ..knowledge import KNOWLEDGE_BASE_PATH, knowledge_manager
-from .errors import OPERATIONAL_ERRORS, error_json
+from .errors import OPERATIONAL_ERRORS, dumps, error_json
 
 if TYPE_CHECKING:
     from ..protocol import VaultClient
@@ -36,7 +36,7 @@ def register_knowledge_tools(server, client: VaultClient) -> None:
         - Link patterns and relationships
         - Orphan notes list (optional)
 
-        The file is stored at `.obsidian-brain/knowledge-base.md` in your vault
+        The file is stored at `Obsidian Brain/knowledge-base.md` in your vault
         and persists across sessions.
 
         **RECOMMENDED**: Call this tool on first use of the MCP server to establish
@@ -72,8 +72,8 @@ def register_knowledge_tools(server, client: VaultClient) -> None:
 
         # Write to vault via VaultClient
         try:
-            # Create or update the knowledge base file
-            await client.create_note(KNOWLEDGE_BASE_PATH, content)
+            # Create or update the knowledge base file (regeneration must replace in place)
+            await client.update_note(KNOWLEDGE_BASE_PATH, content)
             await vault_cache.sync_note(client, KNOWLEDGE_BASE_PATH)
 
             return json.dumps(
@@ -118,7 +118,7 @@ def register_knowledge_tools(server, client: VaultClient) -> None:
             frontmatter = data.get("frontmatter", {})
             vault_stats = frontmatter.get("vault_stats", {})
 
-            return json.dumps(
+            return dumps(
                 {
                     "exists": True,
                     "path": KNOWLEDGE_BASE_PATH,

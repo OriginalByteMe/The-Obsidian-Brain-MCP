@@ -43,6 +43,9 @@ _NOTE_NOT_FOUND_RE = re.compile(r'^Error: File "(?P<path>.+)" not found\.$')
 _VAULT_NOT_FOUND_RE = re.compile(r"^Vault not found\.$")
 _GENERIC_ERROR_RE = re.compile(r"^Error: .+$")
 _CREATE_RESULT_RE = re.compile(r"^(?:Created|Overwrote): (?P<path>.+)$", re.MULTILINE)
+# Commands whose successful stdout IS arbitrary note content, so a generic
+# "Error: …" line there may be the note itself rather than a failure.
+_CONTENT_COMMANDS = frozenset({"read", "daily:read"})
 
 
 def _classify_stdout_error(
@@ -63,7 +66,12 @@ def _classify_stdout_error(
         if not_found.group("path") == target:
             return NoteNotFoundError(not_found.group("path"), command=command)
 
-    if _VAULT_NOT_FOUND_RE.match(stripped) or _GENERIC_ERROR_RE.match(stripped):
+    if _VAULT_NOT_FOUND_RE.match(stripped):
+        return ObsidianCLIError(returncode=0, stderr=stripped, command=command)
+
+    # A read's whole output can be a one-line note that merely starts with
+    # "Error: ", so the catch-all only applies where stdout is a status line.
+    if args and args[0] not in _CONTENT_COMMANDS and _GENERIC_ERROR_RE.match(stripped):
         return ObsidianCLIError(returncode=0, stderr=stripped, command=command)
 
     return None

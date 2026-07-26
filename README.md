@@ -340,7 +340,7 @@ The server discovers the CLI lazily. Set `OBSIDIAN_CLI_PATH` only for a non-stan
 > `Error: File "Note.md" not found.`). This server classifies failures by
 > parsing that stdout text rather than relying on the exit code.
 
-Onboarding writes its vault profile to the visible `Obsidian Brain/config.yml` path.
+Onboarding writes its vault profile to `Obsidian Brain/config.md` — a fenced YAML block inside a Markdown note, because the Obsidian CLI can only create `.md` files inside the visible vault (it rewrites any other extension and cannot write dot-folders).
 
 ---
 

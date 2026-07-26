@@ -45,7 +45,7 @@ For new vaults or first-time use:
 3. `run_onboarding` - Analyze vault and create configuration
 
 Onboarding creates the visible `Obsidian Brain/` folder with:
-- `config.yml` - Detected patterns (PARA, Zettelkasten, naming conventions)
+- `config.md` - Detected patterns (PARA, Zettelkasten, naming conventions) as fenced YAML
 - `memories/vault-overview.md` - Vault structure summary
 - `memories/conventions.md` - Usage guidelines
 

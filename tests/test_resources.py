@@ -27,6 +27,7 @@ class FakeNoteClient:
                 "---\ntags:\n  - project\naliases:\n  - Plan\n---\n# Nested Plan\n\nShip it.\n"
             ),
             "Hidden.md": "# Not in the cache\n",
+            "Obsidian Brain/knowledge-base.md": "# Knowledge Base\n\nGenerated content.\n",
         }
         self.read_paths: list[str] = []
 
@@ -172,6 +173,24 @@ async def test_reads_cached_index_and_nested_note_over_protocol(
     )
     assert note_content.mimeType == "text/markdown"
     assert client.read_paths == ["Projects/Nested Plan.md"]
+
+
+@pytest.mark.asyncio
+async def test_reads_knowledge_base_resource_from_expected_path(
+    connected_resource_session,
+):
+    """vault://knowledge must read the same fixed, CLI-writable .md path
+    that create_vault_knowledge_base/get_knowledge_base_status use."""
+    from obsidian_brain.knowledge import KNOWLEDGE_BASE_PATH
+
+    assert KNOWLEDGE_BASE_PATH == "Obsidian Brain/knowledge-base.md"
+
+    (session, client) = connected_resource_session
+    result = await session.read_resource(AnyUrl("vault://knowledge"))
+    content = result.contents[0]
+    assert isinstance(content, TextResourceContents)
+    assert content.text == "# Knowledge Base\n\nGenerated content.\n"
+    assert client.read_paths == ["Obsidian Brain/knowledge-base.md"]
 
 
 @pytest.mark.asyncio

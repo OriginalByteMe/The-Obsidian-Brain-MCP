@@ -6,6 +6,7 @@ and return expected JSON shapes.
 """
 
 import json
+from datetime import date, datetime
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
@@ -506,6 +507,24 @@ class TestDailyTools:
         data = _load_tool_result(result)
         assert data["error"] is True
         assert data["type"] == "ValidationError"
+
+    @pytest.mark.anyio
+    async def test_get_daily_note_stringifies_datetime_frontmatter(self, setup):
+        """A `created:`/`due:` frontmatter value PyYAML parses into a
+        datetime/date must not crash JSON serialization (regression)."""
+        server, client = setup
+        client.get_daily_note.return_value = {
+            "content": "Daily content",
+            "tags": [],
+            "frontmatter": {
+                "created": datetime(2026, 7, 26, 11, 28, 54),
+                "due": date(2026, 7, 26),
+            },
+        }
+        result = await server.call_tool("get_daily_note", {"date": "2026-07-26"})
+        data = _load_tool_result(result)
+        assert data["frontmatter"]["created"] == "2026-07-26T11:28:54"
+        assert data["frontmatter"]["due"] == "2026-07-26"
 
     @pytest.mark.anyio
     async def test_removed_periodic_not_registered(self, setup):

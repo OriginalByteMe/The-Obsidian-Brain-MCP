@@ -1,7 +1,7 @@
 """
 Memory manager for Obsidian Brain MCP.
 
-Handles persistent memories stored as markdown files in .obsidian-brain/memories/
+Handles persistent memories stored as markdown files in Obsidian Brain/memories/
 to enable cross-session context retention for LLMs.
 """
 
@@ -36,7 +36,7 @@ class MemoryManager:
     """
     Manages persistent memories in the vault.
 
-    Memories are markdown files stored in .obsidian-brain/memories/
+    Memories are markdown files stored in Obsidian Brain/memories/
     that persist across sessions. Each memory has:
     - A descriptive name (filename without .md)
     - YAML frontmatter with metadata

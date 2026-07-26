@@ -126,7 +126,7 @@ frontmatter is present). Frontmatter is parsed by the installed
 | `OBSIDIAN_CLI_PATH` | No | auto-detected | Executable path when `obsidian` is not on `PATH` |
 | `OBSIDIAN_VAULT` | No | CLI default/active vault | Exact Obsidian vault name, not a filesystem path |
 
-The Obsidian desktop app must be running with the CLI enabled under **Settings > General > Command line interface**. The `obsidian` executable must be available on `PATH` or specified with `OBSIDIAN_CLI_PATH`. Onboarding writes the vault profile to the visible `Obsidian Brain/config.yml` path.
+The Obsidian desktop app must be running with the CLI enabled under **Settings > General > Command line interface**. The `obsidian` executable must be available on `PATH` or specified with `OBSIDIAN_CLI_PATH`. Onboarding writes the vault profile to `Obsidian Brain/config.md` (fenced YAML in a Markdown note): the CLI's `create` command forces the `.md` extension and cannot write into dot-folders, so a `.yml` or `.obsidian-brain/` target can never exist.
 
 ---
 

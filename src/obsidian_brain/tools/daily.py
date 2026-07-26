@@ -13,7 +13,7 @@ from ..cache import vault_cache
 from ..exceptions import NoteNotFoundError
 from ..protocol import VaultClient
 from ..utils.wikilinks import create_wikilink
-from .errors import OPERATIONAL_ERRORS, error_json
+from .errors import OPERATIONAL_ERRORS, dumps, error_json
 
 
 def register_daily_tools(server: FastMCP, client: VaultClient) -> None:
@@ -36,17 +36,17 @@ def register_daily_tools(server: FastMCP, client: VaultClient) -> None:
         Uses Obsidian's daily notes feature which requires the
         Daily Notes plugin to be configured.
 
-        Note: when no daily note exists yet for the date, Obsidian's CLI
-        prints nothing and exits successfully -- there is no way to tell
-        that apart from an existing note with empty content. In either case
-        (missing or genuinely empty), this returns success with "content": "".
+        Note: reading CREATES the note when it does not exist yet -- that is
+        the Daily Notes plugin's own behavior, verified against the real CLI
+        (`daily:read` on a missing note prints nothing and leaves a new empty
+        note behind). So an empty "content" means the note is empty, and a
+        missing daily note is not observable through this tool.
 
         Args:
             date: Optional date in YYYY-MM-DD format (default: today)
 
         Returns:
-            JSON with daily note content and metadata. An empty "content"
-            means either an empty note or no note yet -- they look identical.
+            JSON with daily note content and metadata.
         """
         # Use today if no date specified
         if not date:
@@ -67,7 +67,7 @@ def register_daily_tools(server: FastMCP, client: VaultClient) -> None:
         try:
             data = await client.get_daily_note(date)
 
-            return json.dumps(
+            return dumps(
                 {
                     "success": True,
                     "date": date,
