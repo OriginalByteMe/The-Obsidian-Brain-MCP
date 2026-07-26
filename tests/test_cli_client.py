@@ -215,8 +215,8 @@ class TestRegisteredCliFailureModes:
             with pytest.raises(ObsidianCLIError) as exc_info:
                 await client._run("read", "path=Note.md")
         assert exc_info.value.stderr == (
-            "Vault not found. Set OBSIDIAN_VAULT to a vault name or id from "
-            "~/.config/obsidian/obsidian.json, or open the target vault in Obsidian."
+            "Vault not found. Set OBSIDIAN_VAULT to a registered vault name or id, "
+            "or open the target vault in Obsidian."
         )
 
     @pytest.mark.asyncio

@@ -57,9 +57,10 @@ _CLI_DISABLED_MESSAGE = (
     "Obsidian's command line interface is disabled. Enable it in Obsidian: "
     'Settings > General > Advanced > "Command line interface".'
 )
+
 _VAULT_NOT_FOUND_MESSAGE = (
-    "Vault not found. Set OBSIDIAN_VAULT to a vault name or id from "
-    "~/.config/obsidian/obsidian.json, or open the target vault in Obsidian."
+    "Vault not found. Set OBSIDIAN_VAULT to a registered vault name or id, "
+    "or open the target vault in Obsidian."
 )
 
 # The CLI's own "cannot reach Obsidian at all" failure -- unlike every shape

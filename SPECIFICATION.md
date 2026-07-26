@@ -64,7 +64,7 @@ All vault operations go through the `ObsidianCLIClient`, which implements the `V
 
 **CLI registration:** In Obsidian, open **Settings > General > Advanced**, turn **Command line interface** on, and accept the follow-up prompt to register it in your PATH. On Linux this copies Obsidian's bundled `obsidian-cli` to `~/.local/bin/obsidian` (mode 755); `~/.local/bin` must be on `PATH`. On Windows it appends the install directory to the user PATH; on macOS it links into `/usr/local/bin`. Verify with `obsidian version` (for example, `1.12.7 (installer 1.12.7)`).
 
-**Vault resolution:** The CLI checks, in order: (1) the `vault=` argument sent by this server when `OBSIDIAN_VAULT` is set; (2) the calling process's CWD if it is inside a registered vault; (3) the most recently focused open vault window; and (4) otherwise fails with `Vault not found.`. If `OBSIDIAN_VAULT` is unset, the vault must be open in Obsidian. Setting it to the vault's folder name or its id from `~/.config/obsidian/obsidian.json` is reliable, and Obsidian opens that vault's window on demand.
+**Vault resolution:** The CLI checks, in order: (1) the `vault=` argument sent by this server when `OBSIDIAN_VAULT` is set; (2) the calling process's CWD if it is inside a registered vault; (3) the most recently focused open vault window; and (4) otherwise fails with `Vault not found.`. If `OBSIDIAN_VAULT` is unset, the vault must be open in Obsidian. Setting it to the vault's folder name is reliable, and Obsidian opens that vault's window on demand. A vault id from Obsidian's registry also works; see the README for the per-platform registry location.
 
 **Key design decisions:**
 - **No shell=True**: All subprocess calls use list-form arguments for safety

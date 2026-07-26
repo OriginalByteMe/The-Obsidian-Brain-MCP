@@ -339,7 +339,7 @@ The CLI resolves the target vault in this order:
 3. The most recently focused open vault window in Obsidian.
 4. Otherwise the command fails with `Vault not found.`.
 
-If `OBSIDIAN_VAULT` is unset, you **must** have the vault open in Obsidian. The reliable option is to set it to the vault's folder name or its id from `~/.config/obsidian/obsidian.json`; Obsidian opens that vault's window on demand.
+If `OBSIDIAN_VAULT` is unset, you **must** have the vault open in Obsidian. The reliable option is to set it to the vault's folder name; Obsidian opens that vault's window on demand. A vault id from Obsidian's registry also works — the registry lives at `~/.config/obsidian/obsidian.json` on Linux (or `$XDG_CONFIG_HOME/obsidian/obsidian.json`), `~/Library/Application Support/obsidian/obsidian.json` on macOS, and `%APPDATA%\obsidian\obsidian.json` on Windows.
 
 Application-level failures are reported as a line of STDOUT with exit code 0 (for example, `Vault not found.` or `Error: File "X" not found.`). The exception is the CLI binary failing to reach Obsidian: it exits 1 and writes `The CLI is unable to find Obsidian. Please make sure Obsidian is running and try again.` to STDERR.
 
