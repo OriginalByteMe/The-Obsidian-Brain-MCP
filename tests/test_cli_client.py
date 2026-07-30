@@ -117,9 +117,11 @@ class TestFindCliBinary:
         launcher.parent.mkdir(parents=True)
         launcher.touch()
         launcher.chmod(0o755)
-        with patch.dict(os.environ, {"OBSIDIAN_CLI_PATH": str(launcher)}):
-            with pytest.raises(CLINotFoundError, match="Electron app launcher"):
-                find_cli_binary()
+        with (
+            patch.dict(os.environ, {"OBSIDIAN_CLI_PATH": str(launcher)}),
+            pytest.raises(CLINotFoundError, match="Electron app launcher"),
+        ):
+            find_cli_binary()
 
     def test_prefers_sibling_cli_for_electron_launcher(self, tmp_path):
         """Should select obsidian-cli beside an Electron launcher."""
@@ -132,6 +134,33 @@ class TestFindCliBinary:
         sibling.chmod(0o755)
         with patch.dict(os.environ, {"OBSIDIAN_CLI_PATH": str(launcher)}):
             assert find_cli_binary() == str(sibling)
+
+    def test_prefers_sibling_cli_for_symlinked_launcher(self, tmp_path):
+        """Should resolve the bundled CLI beside a symlink target."""
+        launcher = tmp_path / "Obsidian.app" / "Contents" / "MacOS" / "Obsidian"
+        launcher.parent.mkdir(parents=True)
+        launcher.touch()
+        launcher.chmod(0o755)
+        sibling = launcher.with_name("obsidian-cli")
+        sibling.touch()
+        sibling.chmod(0o755)
+        link = tmp_path / "bin" / "obsidian"
+        link.parent.mkdir()
+        link.symlink_to(launcher)
+
+        with patch.dict(os.environ, {"OBSIDIAN_CLI_PATH": str(link)}):
+            assert find_cli_binary() == str(sibling)
+
+    def test_rejects_file_not_executable_by_current_process(self, tmp_path):
+        candidate = tmp_path / "obsidian"
+        candidate.touch()
+        candidate.chmod(0o755)
+        with (
+            patch.dict(os.environ, {"OBSIDIAN_CLI_PATH": str(candidate)}),
+            patch("obsidian_brain.cli_client.os.access", return_value=False),
+            pytest.raises(CLINotFoundError),
+        ):
+            find_cli_binary()
 
     def test_raises_cli_not_found_error(self):
         """Should raise CLINotFoundError when binary not found."""
@@ -170,6 +199,23 @@ class TestRunMethod:
         with patch("obsidian_brain.cli_client.asyncio.create_subprocess_exec", return_value=proc):
             result = await client._run("version")
             assert result == "output text"
+
+    @pytest.mark.asyncio
+    async def test_rejects_bare_command_resolving_to_app_launcher(self, tmp_path):
+        launcher = tmp_path / "Obsidian.app" / "Contents" / "MacOS" / "Obsidian"
+        launcher.parent.mkdir(parents=True)
+        launcher.touch()
+        launcher.chmod(0o755)
+        client = ObsidianCLIClient(cli_path="obsidian")
+
+        with (
+            patch("obsidian_brain.cli_client.shutil.which", return_value=str(launcher)),
+            patch("obsidian_brain.cli_client.asyncio.create_subprocess_exec") as mock_exec,
+            pytest.raises(CLINotFoundError, match="Electron app launcher"),
+        ):
+            await client._run("version")
+
+        mock_exec.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_non_zero_exit_raises_cli_error(self, client):
@@ -680,32 +726,44 @@ class TestExecutableCLIContract:
         assert _captured_calls(calls) == [["search:context", "query=needle", "format=text"]]
 
     @pytest.mark.asyncio
-    async def test_read_preserves_timestamped_note_content(self, fake_cli, monkeypatch):
-        executable, _calls = fake_cli
-        monkeypatch.setenv(
-            "FAKE_OBSIDIAN_STDOUT",
-            "2026-03-08 12:02:59 Loaded updated app package /tmp/app.asar\n"
+    @pytest.mark.parametrize(
+        "content",
+        [
             "2026-03-08 12:03:00 This is note content\n",
-        )
+            "2026-03-08 12:03:00 Success.\nBody\n",
+            "2026-03-08 12:03:00 Latest version is 2.0\nBody\n",
+        ],
+    )
+    async def test_read_preserves_timestamped_note_content(self, fake_cli, monkeypatch, content):
+        executable, _calls = fake_cli
+        monkeypatch.setenv("FAKE_OBSIDIAN_STDOUT", content)
         client = ObsidianCLIClient(cli_path=executable)
 
         note = await client.get_note("Journal.md")
 
-        assert note["content"] == "2026-03-08 12:03:00 This is note content\n"
+        assert note["content"] == content
 
     @pytest.mark.asyncio
-    async def test_read_filters_loaded_main_app_package_log_line(self, fake_cli, monkeypatch):
-        """The real CLI's startup line reads "Loaded main app package", not "updated"."""
+    @pytest.mark.parametrize(
+        "preamble",
+        [
+            (
+                "2026-03-08 12:02:59 Loaded updated app package /tmp/app.asar\n"
+                "Your Obsidian installer is out of date.\n"
+            ),
+            "\n\nIgnored: Error: Argument must be a file path or a NativeImage\n",
+        ],
+    )
+    async def test_read_rejects_electron_app_preamble(self, fake_cli, monkeypatch, preamble):
         executable, _calls = fake_cli
         monkeypatch.setenv(
             "FAKE_OBSIDIAN_STDOUT",
-            "2026-07-26 09:00:00 Loaded main app package /tmp/app.asar\n# Real content\n",
+            f"{preamble}---\ntags:\n- existing\n---\n# Real content\n",
         )
         client = ObsidianCLIClient(cli_path=executable)
 
-        note = await client.get_note("Note.md")
-
-        assert note["content"] == "# Real content\n"
+        with pytest.raises(ObsidianCLIError, match="desktop application startup output"):
+            await client.get_note("Note.md")
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(

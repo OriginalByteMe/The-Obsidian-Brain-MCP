@@ -59,6 +59,10 @@ def _install_fake_cli(tmp_path: Path) -> Path:
                     file=sys.stderr,
                 )
                 raise SystemExit(1)
+            preamble = os.environ.get("FAKE_OBSIDIAN_PREAMBLE")
+            if preamble:
+                print(preamble)
+
 
             args = sys.argv[1:]
             vault_arg = next((arg for arg in args if arg.startswith("vault=")), None)
@@ -545,6 +549,39 @@ async def test_real_server_against_fake_cli(tmp_path: Path, monkeypatch: pytest.
             "type": "NoteNotFoundError",
             "message": "Note not found: Missing.md",
         }
+
+
+@pytest.mark.asyncio
+async def test_fake_cli_preamble_cannot_corrupt_tag_update(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    note = vault / "Note.md"
+    original = "---\ntags:\n- existing\n---\nBody\n"
+    note.write_text(original, encoding="utf-8")
+    executable = _install_fake_cli(tmp_path)
+    monkeypatch.setenv("OBSIDIAN_CLI_PATH", str(executable))
+    monkeypatch.setenv("OBSIDIAN_VAULT", str(vault))
+    monkeypatch.setenv(
+        "FAKE_OBSIDIAN_PREAMBLE",
+        "Ignored: Error: Argument must be a file path or a NativeImage",
+    )
+
+    from obsidian_brain.server import client, mcp
+
+    monkeypatch.setattr(client, "cli_path", None)
+    monkeypatch.setattr(client, "vault", str(vault))
+
+    async with create_connected_server_and_client_session(mcp) as session:
+        result = _tool_json(
+            await session.call_tool("add_tags", {"path": "Note.md", "tags": ["new"]})
+        )
+
+    assert result["error"] is True
+    assert result["type"] == "ObsidianCLIError"
+    assert "desktop application startup output" in result["message"]
+    assert note.read_text(encoding="utf-8") == original
 
 
 @pytest.mark.asyncio

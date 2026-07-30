@@ -510,20 +510,6 @@ class TestTagToolShapes:
         mock_cache.sync_note.assert_awaited_once_with(mock_client, "test.md")
 
     @pytest.mark.asyncio
-    async def test_add_tags_does_not_write_after_malformed_read(
-        self, mock_server, mock_client, mock_cache
-    ):
-        mock_client.get_note.side_effect = ValueError(
-            "CLI output contains a preamble before note frontmatter"
-        )
-
-        with pytest.raises(ValueError, match="preamble"):
-            await mock_server.tools["add_tags"](path="test.md", tags=["newtag"])
-
-        mock_client.update_note.assert_not_awaited()
-        mock_cache.sync_note.assert_not_awaited()
-
-    @pytest.mark.asyncio
     async def test_remove_tags_shape(self, mock_server, mock_client, mock_cache):
         mock_client.get_note.return_value = {
             "content": "# Test\n\nSome content\n",

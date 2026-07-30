@@ -10,17 +10,6 @@ from yaml import YAMLError
 def _parse_markdown(text: str) -> dict[str, Any]:
     """Split raw Markdown into content, normalized tags, and frontmatter."""
     stripped = text.lstrip("\n")
-    has_known_preamble = (
-        "Your Obsidian installer is out of date." in stripped
-        or "Loading updated app package" in stripped
-        or "Loading main app package" in stripped
-    )
-    if (
-        has_known_preamble
-        and not stripped.startswith("---")
-        and re.search(r"(?m)^---\s*$", stripped)
-    ):
-        raise ValueError("CLI output contains a preamble before note frontmatter")
     try:
         post = frontmatter.loads(stripped)
     except YAMLError:

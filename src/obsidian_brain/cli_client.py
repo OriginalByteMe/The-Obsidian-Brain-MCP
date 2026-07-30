@@ -28,9 +28,21 @@ from .parsers import (
     parse_search_results,
 )
 
-# Match only the known startup message, not arbitrary timestamped note content.
-_OBSIDIAN_LOG_RE = re.compile(
-    r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} Load(?:ed|ing) (?:main|updated) app package(?: .*)?$"
+# Startup output is produced by the Electron application launcher, not by the
+# registered CLI. Treat it as a wrong-binary failure before any command parser
+# can mistake it for note content, file paths, or search results.
+_OBSIDIAN_APP_PREAMBLE_RE = re.compile(
+    r"^(?:"
+    r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} "
+    r"Load(?:ed|ing) (?:main|updated) app package"
+    r"|Your Obsidian installer is out of date\."
+    r"|Ignored: Error:)"
+)
+
+_OBSIDIAN_APP_PREAMBLE_MESSAGE = (
+    "The configured Obsidian executable emitted desktop application startup output "
+    "instead of CLI data. Install and register obsidian-cli, or set OBSIDIAN_CLI_PATH "
+    "to the real CLI binary."
 )
 
 # The real Obsidian CLI always exits 0 and reports failures as a single line
@@ -132,17 +144,22 @@ def _is_obsidian_app_launcher(path: str) -> bool:
     )
 
 
+def _is_executable_file(path: Path) -> bool:
+    """Return whether the current process can execute a regular file."""
+    return path.is_file() and os.access(path, os.X_OK)
+
+
 def _resolve_cli_candidate(path: str) -> str:
     """Validate a discovered executable and prefer a real bundled CLI."""
     candidate = Path(path)
-    if not candidate.is_file() or not candidate.stat().st_mode & 0o111:
+    if not _is_executable_file(candidate):
         raise CLINotFoundError(searched_paths=str(path))
 
     if not _is_obsidian_app_launcher(path):
         return str(candidate)
 
-    sibling = candidate.with_name("obsidian-cli")
-    if sibling.is_file() and sibling.stat().st_mode & 0o111:
+    sibling = candidate.resolve().with_name("obsidian-cli")
+    if _is_executable_file(sibling):
         return str(sibling)
 
     raise CLINotFoundError(
@@ -155,8 +172,9 @@ def _resolve_cli_candidate(path: str) -> str:
 
 def _validate_explicit_cli_path(path: str) -> str:
     """Reject the Electron launcher while preserving wrapper overrides."""
-    if _is_obsidian_app_launcher(path):
-        return _resolve_cli_candidate(path)
+    validation_path = shutil.which(path) if not os.path.dirname(path) else path
+    if validation_path and _is_obsidian_app_launcher(validation_path):
+        return _resolve_cli_candidate(validation_path)
     return path
 
 
@@ -193,18 +211,6 @@ def _validate_path(path: str, *, allow_root: bool = False) -> None:
         or re.match(r"^[A-Za-z]:", path)
     ):
         raise ValueError(f"Path must stay within the vault root: {path!r}")
-
-
-def _filter_log_lines(output: str) -> str:
-    """Remove known Obsidian startup lines without consuming note content."""
-    lines = output.splitlines(keepends=True)
-    first_content = 0
-    while first_content < len(lines):
-        line = lines[first_content].rstrip("\r\n")
-        if not _OBSIDIAN_LOG_RE.fullmatch(line):
-            break
-        first_content += 1
-    return "".join(lines[first_content:])
 
 
 class ObsidianCLIClient:
@@ -265,11 +271,18 @@ class ObsidianCLIClient:
                 command=cmd,
             )
 
-        cleaned = _filter_log_lines(stdout.decode())
-        error = _classify_stdout_error(cleaned, args, cmd)
+        decoded_stdout = stdout.decode()
+        if _OBSIDIAN_APP_PREAMBLE_RE.match(decoded_stdout.lstrip("\r\n")):
+            raise ObsidianCLIError(
+                returncode=proc.returncode or 0,
+                stderr=_OBSIDIAN_APP_PREAMBLE_MESSAGE,
+                command=cmd,
+            )
+
+        error = _classify_stdout_error(decoded_stdout, args, cmd)
         if error is not None:
             raise error
-        return cleaned
+        return decoded_stdout
 
     async def _run(self, *args: str, timeout: float | None = None) -> str:
         """Execute a CLI command and return stdout.
