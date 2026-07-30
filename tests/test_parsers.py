@@ -1,5 +1,7 @@
 """Tests for Obsidian CLI text parsers."""
 
+import pytest
+
 from obsidian_brain.parsers import parse_daily, parse_note_read, parse_search_results
 
 
@@ -70,6 +72,17 @@ class TestParseNoteRead:
             "frontmatter": {},
             "modified": None,
         }
+
+    def test_rejects_known_cli_preamble_before_frontmatter(self):
+        raw = "Your Obsidian installer is out of date.\n---\ntags: existing\n---\nBody"
+
+        with pytest.raises(ValueError, match="preamble"):
+            parse_note_read(raw, path="Note.md")
+
+    def test_preserves_horizontal_rule_without_known_preamble(self):
+        result = parse_note_read("# Plain note\n\n---\n\nBody", path="Plain.md")
+
+        assert result["content"] == "# Plain note\n\n---\n\nBody"
 
 
 class TestParseSearchResults:

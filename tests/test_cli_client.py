@@ -80,16 +80,58 @@ class TestFindCliBinary:
             result = find_cli_binary()
             assert result == str(fake_binary)
 
-    def test_finds_binary_via_which(self):
-        """Should fall back to shutil.which."""
+    def test_finds_binary_via_which(self, tmp_path):
+        """Should fall back to a validated executable from PATH."""
+        fake_binary = tmp_path / "obsidian"
+        fake_binary.touch()
+        fake_binary.chmod(0o755)
         with (
             patch.dict(os.environ, {}, clear=False),
-            patch("obsidian_brain.cli_client.shutil.which", return_value="/usr/bin/obsidian"),
+            patch(
+                "obsidian_brain.cli_client.shutil.which",
+                side_effect=[None, str(fake_binary)],
+            ),
         ):
-            # Remove env var if present
             os.environ.pop("OBSIDIAN_CLI_PATH", None)
             result = find_cli_binary()
-            assert result == "/usr/bin/obsidian"
+            assert result == str(fake_binary)
+
+    def test_prefers_registered_cli_name(self, tmp_path):
+        """Should prefer obsidian-cli over the ambiguous obsidian name."""
+        fake_binary = tmp_path / "obsidian-cli"
+        fake_binary.touch()
+        fake_binary.chmod(0o755)
+        with (
+            patch.dict(os.environ, {}, clear=False),
+            patch(
+                "obsidian_brain.cli_client.shutil.which",
+                side_effect=[str(fake_binary)],
+            ),
+        ):
+            os.environ.pop("OBSIDIAN_CLI_PATH", None)
+            assert find_cli_binary() == str(fake_binary)
+
+    def test_rejects_electron_launcher_override(self, tmp_path):
+        """Should not execute an Obsidian app launcher as the CLI."""
+        launcher = tmp_path / "Obsidian.app" / "Contents" / "MacOS" / "Obsidian"
+        launcher.parent.mkdir(parents=True)
+        launcher.touch()
+        launcher.chmod(0o755)
+        with patch.dict(os.environ, {"OBSIDIAN_CLI_PATH": str(launcher)}):
+            with pytest.raises(CLINotFoundError, match="Electron app launcher"):
+                find_cli_binary()
+
+    def test_prefers_sibling_cli_for_electron_launcher(self, tmp_path):
+        """Should select obsidian-cli beside an Electron launcher."""
+        launcher = tmp_path / "Obsidian.app" / "Contents" / "MacOS" / "Obsidian"
+        launcher.parent.mkdir(parents=True)
+        launcher.touch()
+        launcher.chmod(0o755)
+        sibling = launcher.with_name("obsidian-cli")
+        sibling.touch()
+        sibling.chmod(0o755)
+        with patch.dict(os.environ, {"OBSIDIAN_CLI_PATH": str(launcher)}):
+            assert find_cli_binary() == str(sibling)
 
     def test_raises_cli_not_found_error(self):
         """Should raise CLINotFoundError when binary not found."""
