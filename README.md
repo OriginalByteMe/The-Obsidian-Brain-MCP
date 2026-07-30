@@ -173,7 +173,7 @@ Add to `~/.cursor/mcp.json` (global) or `.cursor/mcp.json` (project):
   "mcpServers": {
     "obsidian-brain": {
       "command": "uvx",
-      "args": ["--from", "git+https://github.com/OriginalByteMe/The-Obsidian-Brain-MCP@21f0dfb", "obsidian-brain"]
+      "args": ["--from", "git+https://github.com/OriginalByteMe/The-Obsidian-Brain-MCP", "obsidian-brain"]
     }
   }
 }
@@ -197,7 +197,7 @@ See [Cursor MCP docs](https://docs.cursor.com/context/model-context-protocol) fo
       "command": "uvx",
       "args": [
         "--from",
-        "git+https://github.com/OriginalByteMe/The-Obsidian-Brain-MCP@21f0dfb",
+        "git+https://github.com/OriginalByteMe/The-Obsidian-Brain-MCP",
         "obsidian-brain"
       ]
     }
@@ -215,7 +215,7 @@ Add the server using the CLI:
 
 ```bash
 codex mcp add obsidian-brain \
-  -- uvx --from git+https://github.com/OriginalByteMe/The-Obsidian-Brain-MCP@21f0dfb obsidian-brain
+  -- uvx --from git+https://github.com/OriginalByteMe/The-Obsidian-Brain-MCP obsidian-brain
 ```
 
 Or manually edit `~/.codex/config.toml`:
@@ -223,7 +223,7 @@ Or manually edit `~/.codex/config.toml`:
 ```toml
 [mcp_servers.obsidian-brain]
 command = "uvx"
-args = ["--from", "git+https://github.com/OriginalByteMe/The-Obsidian-Brain-MCP@21f0dfb", "obsidian-brain"]
+args = ["--from", "git+https://github.com/OriginalByteMe/The-Obsidian-Brain-MCP", "obsidian-brain"]
 ```
 
 See [Codex MCP docs](https://developers.openai.com/codex/mcp/) for more details.
@@ -239,7 +239,7 @@ Edit `~/.codeium/windsurf/mcp_config.json`:
   "mcpServers": {
     "obsidian-brain": {
       "command": "uvx",
-      "args": ["--from", "git+https://github.com/OriginalByteMe/The-Obsidian-Brain-MCP@21f0dfb", "obsidian-brain"]
+      "args": ["--from", "git+https://github.com/OriginalByteMe/The-Obsidian-Brain-MCP", "obsidian-brain"]
     }
   }
 }
@@ -259,7 +259,7 @@ Add to `.vscode/mcp.json` (project) or global settings:
     "obsidian-brain": {
       "type": "stdio",
       "command": "uvx",
-      "args": ["--from", "git+https://github.com/OriginalByteMe/The-Obsidian-Brain-MCP@21f0dfb", "obsidian-brain"]
+      "args": ["--from", "git+https://github.com/OriginalByteMe/The-Obsidian-Brain-MCP", "obsidian-brain"]
     }
   }
 }
@@ -279,7 +279,7 @@ Add to `~/.config/zed/settings.json` (Linux) or `~/Library/Application Support/Z
     "obsidian-brain": {
       "command": {
         "path": "uvx",
-        "args": ["--from", "git+https://github.com/OriginalByteMe/The-Obsidian-Brain-MCP@21f0dfb", "obsidian-brain"]
+        "args": ["--from", "git+https://github.com/OriginalByteMe/The-Obsidian-Brain-MCP", "obsidian-brain"]
       }
     }
   }
@@ -301,7 +301,7 @@ Add to `opencode.json` in your project:
     "obsidian-brain": {
       "type": "local",
       "command": "uvx",
-      "args": ["--from", "git+https://github.com/OriginalByteMe/The-Obsidian-Brain-MCP@21f0dfb", "obsidian-brain"],
+      "args": ["--from", "git+https://github.com/OriginalByteMe/The-Obsidian-Brain-MCP", "obsidian-brain"],
       "enabled": true
     }
   }
@@ -316,10 +316,10 @@ See [OpenCode MCP docs](https://opencode.ai/docs/mcp-servers/) for more details.
 
 ```bash
 # Run directly (for testing)
-uvx --from git+https://github.com/OriginalByteMe/The-Obsidian-Brain-MCP@21f0dfb obsidian-brain
+uvx --from git+https://github.com/OriginalByteMe/The-Obsidian-Brain-MCP obsidian-brain
 
 # Or install as a tool
-uv tool install git+https://github.com/OriginalByteMe/The-Obsidian-Brain-MCP@21f0dfb
+uv tool install git+https://github.com/OriginalByteMe/The-Obsidian-Brain-MCP
 obsidian-brain
 ```
 </details>
