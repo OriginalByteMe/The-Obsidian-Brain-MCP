@@ -1,6 +1,6 @@
 [project]
 name = "obsidian-brain-mcp"
-version = "0.1.0"
+version = "0.2.0"
 description = "MCP server for intelligent Obsidian vault interaction via Obsidian CLI"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -18,9 +18,9 @@ classifiers = [
 ]
 
 dependencies = [
-    "mcp>=1.26.0,<2",
+    "mcp>=2.3,<3",
     "pydantic>=2.0.0",
-    "python-frontmatter>=1.1.0",
+    "pyyaml>=6.0",
 ]
 
 [project.optional-dependencies]
@@ -30,6 +30,7 @@ dev = [
     "pytest-timeout>=2.0.0",
     "ruff>=0.4.0",
     "mypy>=1.10.0",
+    "types-pyyaml>=6.0",
 ]
 
 [project.scripts]
@@ -53,9 +54,10 @@ ignore = ["E501"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
-# The real_cli test writes to a live vault, so it never runs by accident:
-# opt in with `pytest -m real_cli` plus OBSIDIAN_MCP_ALLOW_REAL_VAULT_WRITES=1.
-addopts = "-m 'not real_cli'"
+# Live-vault tests (tests/test_live_*.py) talk to a real Obsidian and a disposable vault
+# named by OBSIDIAN_TEST_VAULT, so they never run by accident: opt in with `pytest -m obsidian`.
+addopts = "-m 'not obsidian'"
+markers = ["obsidian: live test against the real Obsidian CLI and a disposable test vault"]
 
 [tool.mypy]
 python_version = "3.12"
