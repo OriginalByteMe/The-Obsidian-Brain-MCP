@@ -90,7 +90,7 @@ Future you will thank present you.
 
 > *"Let's brainstorm ideas for my blog post on AI productivity"*
 
-As ideas flow, your AI captures them in a scratch note. When you land on a good angle, it moves the content to your `Writing/Drafts` folder, adds relevant tags, and links to your research notes on `[[AI Tools]]` and `[[Personal Productivity]]`.
+As ideas flow, your AI captures them in a scratch note. When you land on a good angle, it writes a polished draft to your `Writing/Drafts` folder, adds relevant tags, and links to your research notes on `[[AI Tools]]` and `[[Personal Productivity]]`.
 
 Your vault becomes your writing partner's memory.
 </details>
@@ -137,7 +137,7 @@ Every book you read strengthens your second brain.
 | Feature | Description |
 |---------|-------------|
 | **Full Vault Access** | Read, create, update, and organize notes without leaving your conversation |
-| **Smart Linking** | Automatically discover and create backlinks, traverse your knowledge graph |
+| **Linking** | Resolve links the way Obsidian does, add `[[wikilinks]]`, and traverse backlinks and outgoing links up to three hops |
 | **Tag Intelligence** | Add, remove, and search by tags across your entire vault |
 | **Text Search** | Full-text search across your entire vault |
 | **Daily Notes** | Seamless integration with daily notes |
@@ -151,12 +151,13 @@ Every book you read strengthens your second brain.
 
 ## Prerequisites
 
-1. **Obsidian 1.12.4+** (verified against 1.12.7) with the officially registered CLI:
+1. **Obsidian 1.12.4+** (verified against 1.15) with the officially registered CLI:
    - In Obsidian, open **Settings > General > Advanced** and turn **Command line interface** on.
    - Accept the follow-up prompt to register it in your PATH. On Linux this copies Obsidian's bundled `obsidian-cli` to `~/.local/bin/obsidian` (mode 755); ensure `~/.local/bin` is on your PATH. On Windows it appends the install directory to the user PATH; on macOS it links into `/usr/local/bin`.
-   - Verify the registration with `obsidian version` (for example, `1.12.7 (installer 1.12.7)`).
-   - Keep the Obsidian desktop app running while the server uses the CLI.
+   - Verify the registration with `obsidian version` (for example, `1.15.1 (installer 1.15.0)`).
+   - **Keep the Obsidian desktop app running** with the target vault loaded: the server works by running JavaScript inside Obsidian through the CLI's `eval` command, so there is no separate plugin to install and nothing is read from disk behind Obsidian's back.
    - `OBSIDIAN_CLI_PATH` remains available when you need to point at the binary explicitly.
+   - **Daily notes core plugin** enabled (Settings > Core plugins), if you use `get_daily_note` or `append_to_daily`; they use its folder, date format and template.
 2. **uv** package manager: [Install uv](https://docs.astral.sh/uv/getting-started/installation/)
 
 ## Installation
@@ -341,92 +342,106 @@ The CLI resolves the target vault in this order:
 
 If `OBSIDIAN_VAULT` is unset, you **must** have the vault open in Obsidian. The reliable option is to set it to the vault's folder name; Obsidian opens that vault's window on demand. A vault id from Obsidian's registry also works — the registry lives at `~/.config/obsidian/obsidian.json` on Linux (or `$XDG_CONFIG_HOME/obsidian/obsidian.json`), `~/Library/Application Support/obsidian/obsidian.json` on macOS, and `%APPDATA%\obsidian\obsidian.json` on Windows.
 
-Application-level failures are reported as a line of STDOUT with exit code 0 (for example, `Vault not found.` or `Error: File "X" not found.`). The exception is the CLI binary failing to reach Obsidian: it exits 1 and writes `The CLI is unable to find Obsidian. Please make sure Obsidian is running and try again.` to STDERR.
+Failures are reported as MCP tool errors in plain words: Obsidian not running, CLI disabled, vault not found, note not found, a note that already exists, a heading that is missing, a call that is too large. An error names the path, heading, link or tag in question, but never contains note content or the code sent to Obsidian.
+
+Timeouts: every call is bounded (20 s). A read, a search or an idempotent edit (`update_tags`, `write_note` with `overwrite=true`) that times out is retried once, so the worst case is twice the timeout. Every other write (`append_to_note`, `append_to_daily`, `add_link`, `write_note` without `overwrite`, `delete_note`) is never retried, and its timeout error says the write may have happened: read the note before trying again. The `Received CLI command [...]` lines Obsidian echoes to stdout when several CLI calls run at once are stripped from the output.
 
 ### Troubleshooting
 
-- `Command line interface is not enabled. Please turn it on in Settings > General > Advanced.` — turn on **Command line interface** in Obsidian settings.
-- `Vault not found.` — set `OBSIDIAN_VAULT` to the vault's folder name or id, or open the vault in Obsidian.
-- `The CLI is unable to find Obsidian. Please make sure Obsidian is running and try again.` — start the Obsidian desktop app.
+- `Obsidian's command line interface is disabled` — turn on **Command line interface** in Settings > General > Advanced.
+- `Vault not found` — set `OBSIDIAN_VAULT` to the vault's folder name or id, or open the vault in Obsidian.
+- `Obsidian is not running` — start the Obsidian desktop app and wait for the vault to load.
+- `Obsidian CLI not found` — register the CLI (see Prerequisites) or set `OBSIDIAN_CLI_PATH`.
+- A write fails with a size error — one call carries at most about 900 KB of text (the code travels as a command-line argument). Split the content.
 
-Onboarding writes its vault profile to `Obsidian Brain/config.md` — a fenced YAML block inside a Markdown note, because the Obsidian CLI can only create `.md` files inside the visible vault (it rewrites any other extension and cannot write dot-folders).
+Onboarding, memories and the knowledge base live in a visible `Obsidian Brain/` folder inside the vault (Obsidian does not index dot-folders). The vault profile is a fenced YAML block in `Obsidian Brain/config.md`, so it renders in Obsidian and can be edited by hand; `run_onboarding` will not overwrite your edits unless you pass `force=true`.
 
 ---
 
 ## MCP Resources
 
-| Resource | Description |
-|----------|-------------|
-| `vault://files` | Cached JSON index of every vault file, with its path and whether it is text-readable; Markdown entries also include a note URI |
-| `vault://note/{path}` | Parameterized Markdown note reader; use the percent-encoded URIs included for readable entries in `vault://files` |
-| `vault://structure` | Cached vault structure and note metadata |
-| `vault://tags` | Cached tag counts |
-| `vault://stats` | Cached vault statistics |
-| `vault://knowledge` | Persistent Markdown knowledge base |
+| Resource | Type | Description |
+|----------|------|-------------|
+| `vault://files` | JSON | Every file with `path`, `extension`, `size` and `modified`; Markdown entries include their note URI |
+| `vault://note/{+path}` | Markdown | Exact text of a note. Slashes may be sent as-is (`vault://note/Projects/Plan.md`) or encoded (`%2F`) |
+| `vault://tags` | JSON | Every tag with its occurrence count, as Obsidian counts them |
+| `vault://stats` | JSON | Note, folder (all depths), tag, link and orphan counts, not counting `Obsidian Brain/` |
+| `vault://knowledge` | Markdown | The generated knowledge base |
 
-Call `refresh_vault_structure` before using the cached resources and again when vault changes need to appear. It populates the cached vault structure, including the all-file index and Markdown note metadata. Non-Markdown files are indexed but marked unreadable and do not receive a `vault://note/{path}` URI; the note resource is Markdown-only.
-
-MCP resource discovery and reads are what this server can guarantee. An IDE's `@` picker is a host feature; no MCP server change can force resources into or customize that UI. Use the client's MCP resource browser when available, or read `vault://files` and then a returned note URI.
+Resources read the vault on every request, so there is nothing to refresh. A missing note or knowledge base is a protocol error, not a body that looks like data. An IDE's `@` picker is a host feature; no MCP server change can force resources into it. Use the client's MCP resource browser, or read `vault://files` and then a returned note URI.
 
 ---
 
 ## Available Tools
 
-### Vault Operations
+Every tool returns structured data, has typed and described parameters, and carries MCP annotations (read-only, destructive, idempotent) so clients can decide what to confirm. Failures come back as MCP tool errors with a short, actionable message.
+
+### Notes
 
 | Tool | Description |
 |------|-------------|
-| `list_vault_files` | List files at any path, recursively (the CLI never returns folders) |
-| `get_note` | Read note content, tags, links, and frontmatter |
-| `create_note` | Create notes with tags and validated backlinks |
-| `update_note` | Replace note content entirely |
-| `append_to_note` | Append content, optionally under a specific heading |
-| `delete_note` | Remove a note from your vault |
-| `refresh_vault_structure` | Rebuild the cached vault structure |
+| `list_vault_files` | List files under a folder, recursively, one page at a time (`limit`, `offset`; returns `total`) |
+| `get_note` | Read a note: exact text, frontmatter, tags (inline too), links and headings |
+| `write_note` | Create a note, or replace one with `overwrite=true`. Content is stored verbatim: nothing is added to it |
+| `append_to_note` | Append atomically, at the end or at the end of a named heading's section |
+| `delete_note` | Move a note to Obsidian's trash (`permanent=true` deletes for good) |
 
-### Link Operations
+### Links, Tags and Search
 
 | Tool | Description |
 |------|-------------|
-| `add_backlink` | Add a `[[wikilink]]` to any note |
-| `get_backlinks` | Find all notes that link TO a specific note |
-| `get_outgoing_links` | Find all notes a specific note links TO |
-| `get_linked_notes` | Traverse the link graph (1-3 hops deep) |
-
-### Tag Operations
-
-| Tool | Description |
-|------|-------------|
-| `add_tags` | Add tags to a note's frontmatter |
-| `remove_tags` | Remove tags from a note |
-| `list_all_tags` | Get all tags in your vault with usage counts |
-| `get_notes_by_tag` | Find all notes with a specific tag |
-
-### Search Operations
-
-| Tool | Description |
-|------|-------------|
-| `search_content` | Full-text search across your entire vault |
+| `get_links` | Backlinks and outgoing links of a note, 1-3 hops deep |
+| `add_link` | Append a `[[wikilink]]` to a note; the target is resolved like Obsidian does and the call is idempotent |
+| `update_tags` | Add or remove frontmatter tags without touching the rest of the file |
+| `list_all_tags` | Every tag (inline and frontmatter) with Obsidian's occurrence counts |
+| `get_notes_by_tag` | Notes with a tag, nested tags included by default |
+| `search_content` | Search with Obsidian's own syntax (`path:`, `tag:`, quotes), with a result limit |
 
 ### Daily Notes
 
 | Tool | Description |
 |------|-------------|
-| `get_daily_note` | Retrieve today's or a specific date's daily note |
-| `append_to_daily` | Add content to your daily note |
-| `create_daily_entry` | Create timestamped entries with tags and links |
+| `get_daily_note` | Read today's or a given date's daily note without creating it |
+| `append_to_daily` | Append to the daily note of any date, creating it from your template and any missing heading section; optional `HH:MM` timestamp, tags and links |
 
-### Knowledge & Memory
+### Memory, Onboarding and Knowledge Base
 
 | Tool | Description |
 |------|-------------|
-| `create_vault_knowledge_base` | Generate a comprehensive vault overview |
-| `get_knowledge_base_status` | Check if knowledge base exists and when updated |
-| `check_onboarding_status` | See if vault has been analyzed |
-| `run_onboarding` | Analyze vault structure and create configuration |
-| `list_memories` | List all stored cross-session memories |
-| `read_memory` / `write_memory` | Read or write persistent memory |
-| `edit_memory` / `delete_memory` | Modify or remove memories |
+| `get_vault_config` | Start here: onboarding state, the vault profile, memory count and knowledge base status |
+| `run_onboarding` | Profile the vault (PARA/Zettelkasten, tags, naming, frontmatter) into `Obsidian Brain/config.md` and two starter memories. Existing files are kept unless `force=true` |
+| `list_memories` | List cross-session memories with type and timestamps |
+| `read_memory` / `write_memory` / `delete_memory` | Read, create or replace, and trash a memory. Names match by slug (`Project X` = `project_x`); a different spelling of an existing slug is refused rather than overwriting |
+| `build_knowledge_base` | Generate `Obsidian Brain/knowledge-base.md`: folder tree, tag taxonomy, hub notes, link patterns, orphans |
+
+Memories live in `Obsidian Brain/memories/` as ordinary notes, so you can read and edit them in Obsidian; notes you add there by hand show up in `list_memories`.
+
+### Behaviour notes
+
+- **Paths** are vault-relative with forward slashes and are Unicode NFC-normalised on input, so `Café.md` typed with a combining accent and with a precomposed `é` is one note. `write_note` appends `.md` unless the path ends in a file type Obsidian opens (`md`, `canvas`, `base`, images, audio, video, `pdf`; case-insensitive): `Learning Node.js` becomes `Learning Node.js.md`, and `data.json` becomes `data.json.md`.
+- **`update_tags`** rewrites only the `tags` entry of the frontmatter, as a block list; every other frontmatter line (comments, quoting, key order) and the whole body stay byte-identical. Inline `#tags` in the body are never edited.
+- **`list_all_tags`** reports `occurrences`, counted the way Obsidian's tag pane counts them (a tag used twice in one note counts twice); `vault://tags` carries the same counts.
+- **`search_content`** caps each matching line at 300 characters around the match (`…` marks the cut), so one very long line cannot flood the result.
+- **`write_memory`** on an existing memory reads, then rewrites the whole file: two concurrent writes to the same memory are last-writer-wins, and comments inside the memory's frontmatter are dropped (the values are kept).
+- **Daily tools** (`get_daily_note`, `append_to_daily`) use the **Daily notes** core plugin's folder, format and template, so that plugin must be enabled; the Periodic Notes community plugin is not read.
+
+### Upgrading from 0.1
+
+Version 0.2.0 needs `mcp>=2.3` and cuts the tool surface from 29 to 20. There are no aliases for the removed names.
+
+| 0.1 tool | 0.2 replacement |
+|----------|-----------------|
+| `create_note`, `update_note` | `write_note` (`overwrite=true` to replace). Nothing is added to the content any more: no frontmatter, H1 or tags |
+| `add_tags`, `remove_tags` | `update_tags(path, add, remove)` |
+| `get_backlinks`, `get_outgoing_links`, `get_linked_notes` | `get_links(path, direction, depth)` |
+| `add_backlink` | `add_link` |
+| `create_daily_entry` | `append_to_daily(..., timestamp=true, tags, links)` |
+| `edit_memory` | `write_memory` (replaces the body of an existing memory) |
+| `check_onboarding_status`, `get_knowledge_base_status` | `get_vault_config` |
+| `create_vault_knowledge_base` | `build_knowledge_base` |
+| `refresh_vault_structure` | none: nothing is cached, so there is nothing to refresh |
+
+`delete_note` now moves to the trash unless `permanent=true`. The `vault://structure` resource is gone; use `vault://files`, `vault://tags` and `vault://stats`. The other 0.1 tools keep their names.
 
 ---
 
@@ -438,19 +453,22 @@ git clone https://github.com/OriginalByteMe/The-Obsidian-Brain-MCP.git
 cd The-Obsidian-Brain-MCP
 
 # Install dependencies
-uv sync --dev
+uv sync --extra dev
 
 # Run the server from the package module
 uv run python -m obsidian_brain.server
 
-# Run tests
+# Run the unit tests (no Obsidian needed)
 uv run pytest
 
-# Lint
-uv run ruff check .
+# Run the live tests against a disposable vault (name must contain "testvault")
+OBSIDIAN_TEST_VAULT=my-testvault uv run pytest -m obsidian
+
+# Lint, format and type-check
+uv run ruff check . && uv run ruff format --check . && uv run mypy src
 ```
 
-The project uses `mcp.server.fastmcp.FastMCP` from the official MCP Python SDK v1 line and pins `mcp<2`. MCP v2 remains alpha, while standalone `fastmcp` v4 requires the `mcp==2.0.0b2` prerelease.
+The server is built on `mcp.server.mcpserver.MCPServer` from the official MCP Python SDK, version 2.3 (`mcp>=2.3,<3`). Every vault operation is a snippet of JavaScript run inside Obsidian through `obsidian eval` (see [SPECIFICATION.md](SPECIFICATION.md) for the architecture).
 
 ---
 
