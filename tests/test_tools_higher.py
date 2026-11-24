@@ -123,6 +123,36 @@ async def test_update_of_a_memory_without_frontmatter_adds_created(
     assert fm["updated"] == "2026-11-23T03:00:00Z"
 
 
+async def test_an_update_edits_the_body_and_only_its_own_frontmatter_lines(
+    server: MCPServer, vault: FakeVault
+) -> None:
+    """Numbers like 01234 and 1.10, empty values, flow lists and comments are not re-serialised."""
+    path = f"{MEMORIES_PATH}/handmade.md"
+    original = (
+        "---\nname: handmade\ncode: 01234\nver: 1.10\nempty:\nlist: [a, b]\n# a comment\n"
+        "type: old\ncreated: 2025-01-02T03:04:05Z\ntags:\n  - keep\n---\n\nold body\n"
+    )
+    vault.files[path] = original
+    await call(server, "write_memory", name="handmade", content="new body", memory_type="note")
+    expected = original.replace("type: old", "type: note").replace(
+        "---\n\nold body\n", "updated: '2026-11-23T03:00:00Z'\n---\n\nnew body"
+    )
+    assert vault.files[path] == expected
+    assert vault.calls[-1] == "replace_body" and "write_note" not in vault.calls  # one edit
+
+
+async def test_update_fills_in_a_missing_name_and_created_only(
+    server: MCPServer, vault: FakeVault
+) -> None:
+    path = f"{MEMORIES_PATH}/partial.md"
+    vault.files[path] = "---\ncustom: 1\n---\nold"
+    await call(server, "write_memory", name="partial", content="new")
+    assert vault.files[path] == (
+        "---\ncustom: 1\nname: partial\ncreated: '2026-11-23T03:24:12Z'\n"
+        "updated: '2026-11-23T03:00:00Z'\n---\nnew"
+    )
+
+
 async def test_unparseable_frontmatter_is_never_dropped(
     server: MCPServer, vault: FakeVault
 ) -> None:

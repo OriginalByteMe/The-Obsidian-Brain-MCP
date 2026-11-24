@@ -55,6 +55,15 @@ async def test_resources_are_listed_with_json_mime_types(server: MCPServer) -> N
     assert templates == {"vault://note/{+path}": "text/markdown"}
 
 
+async def test_the_tags_resource_says_it_counts_occurrences_not_notes(server: MCPServer) -> None:
+    async with Client(server) as client:
+        tags = next(
+            r for r in (await client.list_resources()).resources if str(r.uri) == "vault://tags"
+        )
+    description = (tags.description or "").lower()
+    assert "occurrence" in description and "note count" not in description
+
+
 async def test_files_lists_every_file_with_note_uris_for_markdown(
     server: MCPServer, vault: FakeVault
 ) -> None:

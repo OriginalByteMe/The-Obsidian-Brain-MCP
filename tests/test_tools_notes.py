@@ -8,6 +8,7 @@ run the real tools against the disposable vault named by OBSIDIAN_TEST_VAULT
 
 from __future__ import annotations
 
+import asyncio
 import unicodedata
 import uuid
 from typing import Any
@@ -22,12 +23,15 @@ from obsidian_brain.tools import notes
 from obsidian_brain.vault import Vault
 
 from .conftest import (
+    BINARY,
+    LocalTrash,
     Sandbox,
     call,
     data,
     error_text,
     eventually,
     live_tools,
+    put,
     tool_list,
 )
 from .fake_vault import FakeVault
@@ -140,6 +144,18 @@ async def test_write_note_is_verbatim_and_reports_the_nfc_path(
     assert fake.files == {NFC: text}
 
 
+async def test_write_note_replaces_only_when_overwrite_is_true(
+    fake: FakeVault, note_tools: MCPServer
+) -> None:
+    fake.files["a.md"] = "old"
+    assert "already exists" in error_text(
+        await call(note_tools, "write_note", path="a.md", content="new")
+    )
+    assert fake.files["a.md"] == "old"
+    replaced = await call(note_tools, "write_note", path="a.md", content="new", overwrite=True)
+    assert data(replaced) == {"path": "a.md"} and fake.files["a.md"] == "new"
+
+
 async def test_append_to_note_goes_under_the_heading_and_reports_the_nfc_path(
     fake: FakeVault, note_tools: MCPServer
 ) -> None:
@@ -154,10 +170,16 @@ async def test_append_to_note_goes_under_the_heading_and_reports_the_nfc_path(
     )
 
 
-async def test_delete_note_trashes_by_default(fake: FakeVault, note_tools: MCPServer) -> None:
-    fake.files["a.md"] = "x"
+async def test_delete_note_trashes_by_default_and_only_permanent_deletes_for_good(
+    fake: FakeVault, note_tools: MCPServer
+) -> None:
+    fake.files.update({"a.md": "x", "b.md": "y"})
     result = data(await call(note_tools, "delete_note", path="a.md"))
-    assert result == {"path": "a.md", "permanent": False} and fake.trashed == ["a.md"]
+    assert result == {"path": "a.md", "permanent": False}
+    assert (fake.trashed, fake.deleted) == (["a.md"], [])
+    result = data(await call(note_tools, "delete_note", path="b.md", permanent=True))
+    assert result == {"path": "b.md", "permanent": True}
+    assert (fake.trashed, fake.deleted) == (["a.md"], ["b.md"])
 
 
 # --- update_tags ---------------------------------------------------------------------------
@@ -327,6 +349,16 @@ async def test_add_link_is_idempotent_whatever_the_existing_link_looks_like(
     assert fake.writes == []
 
 
+async def test_add_link_checks_and_writes_in_one_vault_call(
+    fake: FakeVault, note_tools: MCPServer
+) -> None:
+    """Two calls (read links, then append) would let concurrent callers both add the line."""
+    fake.files.update({"a.md": "text", "Plain.md": "x"})
+    await call(note_tools, "add_link", path="a.md", target="Plain")
+    assert fake.calls.count("append_unless_linked") == 1
+    assert not {"append", "outgoing_links"} & set(fake.calls)
+
+
 @pytest.mark.parametrize(
     "target", ["Plain]]\n## injected", "[[Plain]]", "Plain|alias", "Plain#Sec", "a\nb"]
 )
@@ -432,6 +464,64 @@ async def test_live_a_misspelled_argument_writes_nothing(
         message = await t.err("append_to_note", path=note, content="x", headng="Tasks")
         assert "Extra inputs are not permitted" in message
         assert await t.text(note) == "# T\n\n## Tasks\n\nold\n"
+
+
+@pytest.mark.obsidian
+async def test_live_write_note_overwrite_and_delete_note_permanent_reach_obsidian(
+    vault: Vault, sandbox: Sandbox, local_trash: LocalTrash, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async with live_tools(vault, sandbox, monkeypatch) as t:
+        name = local_trash.name("Keep")
+        keep = await t.put(name, "v1")
+        assert "already exists" in await t.err("write_note", path=keep, content="v2")
+        assert await t.text(keep) == "v1"
+        written = await t.ok("write_note", path=keep, content="v2", overwrite=True)
+        assert written == {"path": keep} and await t.text(keep) == "v2"
+
+        assert await t.ok("delete_note", path=keep) == {"path": keep, "permanent": False}
+        assert await local_trash.text(name) == "v2"  # in the trash, not gone
+
+        gone_name = local_trash.name("Gone")
+        gone = await t.put(gone_name, "x")
+        assert await t.ok("delete_note", path=gone, permanent=True) == {
+            "path": gone,
+            "permanent": True,
+        }
+        assert "not found" in (await t.err("get_note", path=gone)).lower()
+        assert await local_trash.text(gone_name) is None  # gone for good
+
+
+@pytest.mark.obsidian
+async def test_live_concurrent_add_link_calls_write_one_bullet_and_report_one_add(
+    vault: Vault, sandbox: Sandbox, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    name = f"Alpha {uuid.uuid4().hex[:6]}"  # unique: the shortest link text is its name
+    async with live_tools(vault, sandbox, monkeypatch) as t:
+        await t.put(name, "x")
+        note = await t.put("C", "# C\n\ntext\n")
+        results = await asyncio.gather(
+            *(t.ok("add_link", path=note, target=name) for _ in range(8))
+        )
+        assert sorted(r["added"] for r in results) == [False] * 7 + [True]
+        assert await t.text(note) == f"# C\n\ntext\n- [[{name}]]\n"
+
+
+@pytest.mark.obsidian
+async def test_live_a_binary_file_is_never_rewritten_by_a_text_edit(
+    vault: Vault, cli: ObsidianCLI, disk, sandbox: Sandbox, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = sandbox.path("pic.png")
+    await put(cli, path, BINARY)
+    async with live_tools(vault, sandbox, monkeypatch) as t:
+        other = await t.put("Other", "x")
+        for tool, args in {
+            "append_to_note": {"content": "oops"},
+            "update_tags": {"add": ["x"]},
+            "add_link": {"target": other},
+        }.items():
+            assert await t.err(tool, path=path, **args)
+        assert "not a text file" in await t.err("append_to_note", path=path, content="oops")
+        assert disk(path) == BINARY
 
 
 @pytest.mark.obsidian

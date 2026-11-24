@@ -67,7 +67,11 @@ def register(server: MCPServer) -> None:
 
     @server.resource("vault://tags", mime_type="application/json")
     async def vault_tags() -> str:
-        """Every tag in the vault (frontmatter and inline) with its note count, as JSON."""
+        """Every tag in the vault (frontmatter and inline) with its occurrence count, as JSON.
+
+        Occurrences are counted as Obsidian counts them: a note using a tag twice counts twice,
+        and a nested tag also counts in its parents. They are not numbers of notes.
+        """
         with _resource_errors():
             tags = await get_vault().tags()
         ordered = dict(sorted(tags.items(), key=lambda item: (-item[1], item[0])))

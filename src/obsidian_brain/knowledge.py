@@ -133,10 +133,9 @@ def _tag_taxonomy(notes: list[NoteSnapshot]) -> str:
         "| Rank | Tag | Notes | Example Note |",
         "|------|-----|-------|--------------|",
     ]
+    # Tags are code spans: bare `#tag` text in a note is a real tag in Obsidian's index.
     for rank, (tag, count) in enumerate(list(counts.items())[:20], 1):
-        lines.append(
-            f"| {rank} | {_cell('#' + tag)} | {count} | {_cell(example[tag.casefold()])} |"
-        )
+        lines.append(f"| {rank} | `#{tag}` | {count} | {_cell(example[tag.casefold()])} |")
     roots: dict[str, list[tuple[str, int]]] = defaultdict(list)
     for tag, count in counts.items():
         if "/" in tag:
@@ -144,8 +143,8 @@ def _tag_taxonomy(notes: list[NoteSnapshot]) -> str:
     if roots:
         lines += ["", "### Hierarchical Tags", ""]
         for root in sorted(roots):
-            lines.append(f"- **#{root}**")
-            lines.extend(f"  - #{tag} ({count})" for tag, count in roots[root])
+            lines.append(f"- **`#{root}`**")
+            lines.extend(f"  - `#{tag}` ({count})" for tag, count in roots[root])
     return "\n".join(lines)
 
 

@@ -7,6 +7,7 @@ Every `Vault` method the tools and resources call is here; `calls` records one e
 
 import json
 import re
+from collections.abc import Mapping
 from datetime import UTC, date, datetime
 from pathlib import PurePosixPath
 from typing import Any
@@ -15,10 +16,11 @@ import yaml
 
 from obsidian_brain.exceptions import (
     HeadingNotFoundError,
+    InvalidArgumentError,
     NoteExistsError,
     NoteNotFoundError,
 )
-from obsidian_brain.memory import split_frontmatter
+from obsidian_brain.memory import frontmatter_yaml, split_frontmatter
 from obsidian_brain.models import (
     FileInfo,
     Link,
@@ -33,6 +35,8 @@ from obsidian_brain.models import (
 
 NOW = datetime(2026, 11, 23, 3, 24, 12, tzinfo=UTC)
 _INLINE_TAG = re.compile(r"(?<![\w/])#([A-Za-z][\w/-]*)")
+_CODE_FENCE = re.compile(r"```.*?```", re.DOTALL)  # Obsidian reads no tags inside code
+_CODE_SPAN = re.compile(r"`[^`\n]*`")
 _WIKILINK = re.compile(r"\[\[([^\]|#]+)(?:#[^\]|]*)?(?:\|([^\]]*))?\]\]")
 _HEADING = re.compile(r"^(#{1,6})\s+(.*?)\s*$")
 _TAGS_ENTRY = re.compile(r"^(tags|tag):")
@@ -55,6 +59,7 @@ class FakeVault:
         self.files: dict[str, str] = dict(files or {})
         self.extra_folders = list(extra_folders or [])
         self.trashed: list[str] = []
+        self.deleted: list[str] = []  # removed for good (`permanent=True`)
         self.writes: list[str] = []
         self.calls: list[str] = []  # one entry per Vault method call, to assert "one eval"
         self.daily_folder = "Daily"
@@ -79,11 +84,9 @@ class FakeVault:
         return [str(t).removeprefix("#") for t in raw]
 
     def _tag_uses(self, text: str) -> list[str]:
-        """Every tag occurrence: frontmatter entries plus each inline use."""
-        return [
-            *self._fm_tags(self._frontmatter(text)),
-            *_INLINE_TAG.findall(split_frontmatter(text)[1]),
-        ]
+        """Every tag occurrence: frontmatter entries plus each inline use outside code."""
+        body = _CODE_SPAN.sub("", _CODE_FENCE.sub("", split_frontmatter(text)[1]))
+        return [*self._fm_tags(self._frontmatter(text)), *_INLINE_TAG.findall(body)]
 
     def _links(self, text: str) -> list[Link]:
         stems = {PurePosixPath(p).stem: p for p in self.files if p.endswith(".md")}
@@ -233,12 +236,63 @@ class FakeVault:
         self._append(path, content, heading, create_heading, as_line)
         self.writes.append(path)
 
+    async def append_unless_linked(
+        self, path: str, target: str, content: str, heading: str | None = None
+    ) -> bool:
+        self.calls.append("append_unless_linked")
+        if any(link.target == target for link in self._note(path).links):
+            return False
+        self._append(path, content, heading, False, True)
+        self.writes.append(path)
+        return True
+
+    async def replace_body(
+        self,
+        path: str,
+        body: str,
+        *,
+        properties: Mapping[str, object] | None = None,
+        defaults: Mapping[str, object] | None = None,
+    ) -> None:
+        """The text after the frontmatter block replaced; only the given properties are edited."""
+        self.calls.append("replace_body")
+        note = self._note(path)
+        block, _ = split_frontmatter(note.content)
+        lines = block.splitlines(keepends=True)[1:-1]
+        if (
+            block
+            and not note.frontmatter
+            and any(line.strip() and not line.lstrip().startswith("#") for line in lines)
+        ):
+            raise InvalidArgumentError(
+                f"{path} has frontmatter Obsidian cannot parse; fix it in Obsidian first."
+            )
+        for source, replace in ((defaults, False), (properties, True)):
+            for key, value in (source or {}).items():
+                entry = frontmatter_yaml({key: value}).splitlines(keepends=True)
+                at = next(
+                    (i for i, line in enumerate(lines) if re.match(f"{key}[ \\t]*:", line)), None
+                )
+                if at is None:
+                    if replace or key not in note.frontmatter:
+                        lines += entry
+                elif replace:
+                    end = at + 1
+                    while end < len(lines) and lines[end].startswith((" ", "\t", "-")):
+                        end += 1
+                    lines[at:end] = entry
+        gap = (
+            "\n" if block and note.content[len(block) :].startswith("\n") else "" if block else "\n"
+        )
+        self.files[path] = f"---\n{''.join(lines)}---\n{gap}{body}"
+        self.writes.append(path)
+
     async def delete(self, path: str, permanent: bool = False) -> None:
         self.calls.append("delete")
         if path not in self.files:
             raise NoteNotFoundError(f"Note not found: {path}")
         del self.files[path]
-        self.trashed.append(path)
+        (self.deleted if permanent else self.trashed).append(path)
 
     # -- tags ----------------------------------------------------------------------------
 

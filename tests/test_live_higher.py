@@ -15,6 +15,8 @@ empty `Obsidian Brain/` folder (the only place these tools write).
 
 import asyncio
 import json
+import re
+import uuid
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 
@@ -143,7 +145,92 @@ async def test_parallel_writes_to_different_memories_all_land(vault: Vault) -> N
     assert names == [f"parallel {i}" for i in range(6)]
 
 
+async def test_an_update_edits_the_body_and_only_its_own_frontmatter_lines(vault: Vault) -> None:
+    """Numbers like 01234 and 1.10, empty values, flow lists and comments are not re-serialised."""
+    path = f"{MEMORIES_PATH}/handmade.md"
+    original = (
+        "---\nname: handmade\ncode: 01234\nver: 1.10\nempty:\nlist: [a, b]\n# a comment\n"
+        "type: old\ncreated: 2025-01-02T03:04:05Z\ntags:\n  - keep\n---\n\nold body\n"
+    )
+    await vault.write_note(path, original)
+    written = data(
+        await call(server, "write_memory", name="handmade", content="new body", memory_type="note")
+    )
+    assert written == {"name": "handmade", "path": path, "action": "updated"}
+    after = (await vault.read_note(path)).content
+    stamp = re.search(r"^updated: '\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ'\n", after, re.MULTILINE)
+    assert stamp, after
+    expected = original.replace("type: old", "type: note").replace("old body\n", "new body")
+    assert after.replace(stamp.group(), "") == expected
+    assert stamp.start() > after.index(
+        "tags:\n  - keep\n"
+    )  # a new line goes to the end of the block
+
+    await asyncio.sleep(1.1)  # a second update replaces that line in place
+    await call(server, "write_memory", name="handmade", content="newer body")
+    later = (await vault.read_note(path)).content
+    moved = re.search(r"updated: '[^']+'\n", later)
+    assert moved and later.count("updated:") == 1 and later.endswith("\n\nnewer body")
+    assert later.replace(moved.group(), "") == expected.replace("new body", "newer body")
+
+
+async def test_concurrent_memory_updates_and_tag_edits_lose_nothing(vault: Vault) -> None:
+    await call(server, "write_memory", name="Race", content="v0")
+    path = f"{MEMORIES_PATH}/race.md"
+    results = await asyncio.gather(
+        *(call(server, "write_memory", name="Race", content=f"body {i}") for i in range(3)),
+        *(call(server, "update_tags", path=path, add=[f"tag{i}"]) for i in range(6)),
+    )
+    assert [error_text(r) for r in results if r.is_error] == []
+    note = await vault.read_note(path)
+    assert sorted(note.frontmatter["tags"]) == [f"tag{i}" for i in range(6)]
+    assert split_frontmatter(note.content)[1] in {"body 0", "body 1", "body 2"}
+    assert note.content.count("updated:") == 1
+
+
+async def test_a_memory_with_an_empty_frontmatter_block_is_updated_in_it(vault: Vault) -> None:
+    path = f"{MEMORIES_PATH}/blank.md"
+    await vault.write_note(path, "---\n---\nold")
+    await call(server, "write_memory", name="blank", content="new")
+    note = await vault.read_note(path)
+    assert split_frontmatter(note.content)[1] == "new" and note.content.startswith(
+        "---\nname: blank\n"
+    )
+    assert set(note.frontmatter) == {"name", "created", "updated"}
+
+
 # --- onboarding ----------------------------------------------------------------------------
+
+
+async def test_generated_notes_add_no_tags_to_the_vault(vault: Vault) -> None:
+    """`#tag` text in a generated note is a real tag to Obsidian: the tag tools must not see it."""
+    key = uuid.uuid4().hex[:6]
+    folder = f"_tagcheck-{key}"
+    await vault.write_note(
+        f"{folder}/a.md",
+        f"---\ntags: [fresh-{key}, proj-{key}/one]\n---\n#fresh-{key} #proj-{key}/two\n"
+        + "".join(f"#proj-{key}/n{i} " for i in range(4)),
+    )
+    await vault.write_note(f"{folder}/b.md", f"#fresh-{key}\n[[a]]")
+    try:
+        before = await vault.tags()
+        before_notes = await vault.notes_with_tag(f"fresh-{key}")
+        assert before[f"fresh-{key}"] == 3 and len(before_notes) == 2
+        data(await call(server, "run_onboarding"))
+        data(await call(server, "build_knowledge_base"))
+        assert await vault.tags() == before
+        assert await vault.notes_with_tag(f"fresh-{key}") == before_notes
+        assert await vault.notes_with_tag(f"proj-{key}") == [f"{folder}/a.md"]
+        listed = {
+            t["tag"]: t["occurrences"]
+            for t in data(await call(server, "list_all_tags", limit=1000))["tags"]
+        }
+        assert listed == before
+    finally:
+        await vault.cli.eval(
+            "const f = app.vault.getFolderByPath(input); if (f) await app.vault.delete(f, true); return null;",
+            folder,
+        )
 
 
 async def test_onboarding_profiles_the_vault_and_a_rerun_keeps_manual_edits(vault: Vault) -> None:

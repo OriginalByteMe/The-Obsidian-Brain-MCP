@@ -74,12 +74,16 @@ def split_frontmatter(text: str) -> tuple[str, str]:
     return match.group(), re.sub(r"\A\r?\n", "", text[match.end() :], count=1)
 
 
-def frontmatter_block(frontmatter: Mapping[str, object]) -> str:
-    """Render a dict as a `---` fenced YAML block (always valid YAML, keys in given order)."""
-    dumped = yaml.safe_dump(
+def frontmatter_yaml(frontmatter: Mapping[str, object]) -> str:
+    """The YAML lines of a mapping (keys in given order), each ending in a newline."""
+    return yaml.safe_dump(
         frontmatter, sort_keys=False, allow_unicode=True, width=1_000_000, default_flow_style=False
     )
-    return f"---\n{dumped}---\n"
+
+
+def frontmatter_block(frontmatter: Mapping[str, object]) -> str:
+    """Render a dict as a `---` fenced YAML block (always valid YAML, keys in given order)."""
+    return f"---\n{frontmatter_yaml(frontmatter)}---\n"
 
 
 def memory_text(frontmatter: Mapping[str, object], body: str) -> str:

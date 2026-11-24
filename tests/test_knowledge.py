@@ -89,8 +89,15 @@ async def test_folder_tree_nests_every_level() -> None:
 
 async def test_tag_table_and_hierarchy() -> None:
     text = await render(VAULT)
-    assert "| 1 | #index | 2 | Home.md |" in text
-    assert "- **#project**\n  - #project/alpha (1)" in text
+    assert "| 1 | `#index` | 2 | Home.md |" in text
+    assert "- **`#project`**\n  - `#project/alpha` (1)" in text
+
+
+async def test_tags_are_code_spans_so_obsidian_indexes_none_of_them() -> None:
+    """Bare `#tag` text in a note is a real tag: the file would add to every tag count."""
+    text = await render(VAULT)
+    generated = FakeVault({KNOWLEDGE_BASE_PATH: text, "Home.md": VAULT["Home.md"]})
+    assert await generated.tags() == {"index": 1}  # only Home.md's own tag
 
 
 async def test_hubs_links_and_orphans_sections() -> None:

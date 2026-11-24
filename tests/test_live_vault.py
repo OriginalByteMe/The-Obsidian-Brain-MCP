@@ -27,7 +27,7 @@ from obsidian_brain.exceptions import (
 from obsidian_brain.obsidian import ObsidianCLI
 from obsidian_brain.vault import Vault
 
-from .conftest import Sandbox, eventually, put
+from .conftest import BINARY, LocalTrash, Sandbox, eventually, put
 
 pytestmark = pytest.mark.obsidian
 
@@ -231,15 +231,23 @@ class TestFiles:
         assert disk(path) == content.encode()
         assert (await vault.read_note(path)).content == content
 
-    async def test_delete_goes_to_trash_by_default(self, vault, cli, sandbox: Sandbox):
-        path = await vault.write_note(sandbox.path("bye.md"), "x")
+    async def test_delete_goes_to_trash_by_default(
+        self, vault, cli, local_trash: LocalTrash, sandbox: Sandbox
+    ):
+        name = local_trash.name("bye")
+        path = await vault.write_note(sandbox.path(name), "kept in the trash")
         await vault.delete(path)
         assert not await exists(vault, path)
+        assert await local_trash.text(name) == "kept in the trash"
 
-    async def test_permanent_delete_and_missing(self, vault, disk, sandbox: Sandbox):
-        path = await vault.write_note(sandbox.path("gone.md"), "x")
+    async def test_permanent_delete_skips_the_trash_and_a_missing_note_is_an_error(
+        self, vault, disk, local_trash: LocalTrash, sandbox: Sandbox
+    ):
+        name = local_trash.name("gone")
+        path = await vault.write_note(sandbox.path(name), "x")
         await vault.delete(path, permanent=True)
         assert not await exists(vault, path)
+        assert await local_trash.text(name) is None
         with pytest.raises(FileNotFoundError):
             disk(path)
         with pytest.raises(NoteNotFoundError):
@@ -283,6 +291,22 @@ class TestAppend:
             await vault.append(sandbox.path("nope.md"), "x")
         with pytest.raises(NoteNotFoundError):
             await vault.append(sandbox.path("nope.md"), "x", heading="## H")
+
+    async def test_a_binary_file_is_refused_and_its_bytes_are_never_rewritten(
+        self, vault, cli, disk, sandbox: Sandbox
+    ):
+        for name in ("pic.png", "pic.md"):  # `.md` in the name does not make bytes text
+            path = sandbox.path(name)
+            await put(cli, path, BINARY)
+            for kwargs in (
+                {},
+                {"as_line": True},
+                {"heading": "## H"},
+                {"heading": "H", "create_heading": True},
+            ):
+                with pytest.raises(InvalidArgumentError, match="not a text file"):
+                    await vault.append(path, "oops", **kwargs)
+            assert disk(path) == BINARY
 
     NOTE = "# Title\n\n## Notes\n\nold\n\n### Deeper\n\ndeep text\n\n## Other\n\nx\n"
 
@@ -503,7 +527,6 @@ class TestUpdateTags:
             ("'x #y'", ["x", "y"]),
             ('["a, #b", c]', ["a, #b", "c"]),  # a quoted item keeps its comma
             ("[a, 'b c']  # trailing comment", ["a", "b c"]),
-            ("[#a, b]", None),  # not valid YAML: Obsidian sees no properties at all
         ],
     )
     async def test_quoted_and_commented_values_are_never_mangled(
@@ -513,12 +536,56 @@ class TestUpdateTags:
         path = await vault.write_note(sandbox.path("q.md"), original)
         change = await vault.update_tags(path, add=["new"])
         text = disk(path).decode()
-        if kept is None:  # the unreadable block stays verbatim below the new one
-            assert text == f"---\ntags:\n  - new\n---\n{original}"
-            return
         assert change.tags == [*kept, "new"]
         assert (await vault.read_note(path)).frontmatter["tags"] == [*kept, "new"]
         assert text.endswith("\ntitle: T\n---\nB\n") and text.count("tags") == 1
+
+    @pytest.mark.parametrize(
+        "original",
+        [
+            "---\ntitle: A\ntags:\n  - a\ntitle: B\n---\nbody\n",  # duplicate key
+            "---\ntags: [a\nk: : v\n---\nbody\n",  # invalid YAML
+            "---\ntags: [#a, b]\ntitle: T\n---\nB\n",  # `#` starts a comment: the list never closes
+            "\ufeff---\r\ntitle: A\r\ntitle: B\r\n---\r\nbody",
+            "---\nplain text\n---\nbody\n",  # not a list of properties
+        ],
+    )
+    async def test_frontmatter_obsidian_cannot_read_is_refused_not_shadowed(
+        self, vault, disk, sandbox: Sandbox, original
+    ):
+        """A second block on top would turn the unreadable one into body text and hide its tags."""
+        path = await vault.write_note(sandbox.path("bad.md"), original)
+        with pytest.raises(InvalidArgumentError, match="fix it in Obsidian"):
+            await vault.update_tags(path, add=["new"])
+        with pytest.raises(InvalidArgumentError, match="fix it in Obsidian"):
+            await vault.update_tags(path, remove=["a"])
+        assert disk(path).decode() == original
+
+    @pytest.mark.parametrize(
+        ("before", "after"),
+        [
+            ("---\n---\nB", "---\ntags:\n  - b\n---\nB"),
+            ("---\r\n---\r\nB", "---\r\ntags:\r\n  - b\r\n---\r\nB"),
+            ("---\n# a comment\n\n---\nB", "---\n# a comment\n\ntags:\n  - b\n---\nB"),
+            ("---\n---", "---\ntags:\n  - b\n---"),
+        ],
+    )
+    async def test_an_empty_or_comment_only_block_gets_the_tags_inside_it(
+        self, vault, disk, sandbox: Sandbox, before, after
+    ):
+        path = await vault.write_note(sandbox.path("empty.md"), before)
+        await vault.update_tags(path, add=["b"])
+        assert disk(path) == after.encode()
+        assert (await vault.read_note(path)).frontmatter["tags"] == ["b"]
+
+    async def test_a_binary_file_is_refused_and_its_bytes_are_never_rewritten(
+        self, vault, cli, disk, sandbox: Sandbox
+    ):
+        path = sandbox.path("pic.md")
+        await put(cli, path, BINARY)
+        with pytest.raises(InvalidArgumentError, match="not a text file"):
+            await vault.update_tags(path, add=["new"])
+        assert disk(path) == BINARY
 
     async def test_add_and_remove_are_case_insensitive_and_normalised(
         self, vault, disk, sandbox: Sandbox
@@ -551,18 +618,18 @@ class TestUpdateTags:
     async def test_body_that_starts_with_a_horizontal_rule_is_untouched(
         self, vault, disk, sandbox: Sandbox
     ):
-        for name, body in {
+        body = "---\ntags: [a]\n---\n---\n\nrule above\n\n---\nend\n"
+        path = await vault.write_note(sandbox.path("hr_after_fm.md"), body)
+        await vault.update_tags(path, add=["new"])
+        assert disk(path).decode() == body.replace("tags: [a]", "tags:\n  - a\n  - new")
+        for name, rule in {
             "hr": "---\n\nHello\n\n---\n\nWorld\n",
-            "hr_text": "---\nplain text\n---\nbody after\n",
-            "hr_after_fm": "---\ntags: [a]\n---\n---\n\nrule above\n\n---\nend\n",
+            "hr_text": "---\nx\n---\ny\n",
         }.items():
-            path = await vault.write_note(sandbox.path(f"{name}.md"), body)
-            await vault.update_tags(path, add=["new"])
-            text = disk(path).decode()
-            if name == "hr_after_fm":
-                assert text == body.replace("tags: [a]", "tags:\n  - a\n  - new")
-            else:
-                assert text == "---\ntags:\n  - new\n---\n" + body  # new block above; nothing lost
+            path = await vault.write_note(sandbox.path(f"{name}.md"), rule)
+            with pytest.raises(InvalidArgumentError, match="fix it in Obsidian"):
+                await vault.update_tags(path, add=["new"])  # Obsidian reads it as a property block
+            assert disk(path).decode() == rule
 
     async def test_body_is_byte_identical(self, vault, disk, sandbox: Sandbox):
         body = (
@@ -673,6 +740,81 @@ class TestUpdateTags:
             await vault.update_tags(sandbox.path("a.txt"), add=["x"])
 
 
+class TestReplaceBody:
+    async def test_only_the_body_and_the_given_properties_change(
+        self, vault, disk, sandbox: Sandbox
+    ):
+        original = "\ufeff---\r\n# c\r\nzip: 01234\r\ntype: old\r\nver: 1.10\r\n---\r\n\r\nold\r\n"
+        path = await vault.write_note(sandbox.path("n.md"), original)
+        await vault.replace_body(
+            path,
+            "new",
+            properties={"type": "new", "updated": "2026-01-02T03:04:05Z"},
+            defaults={"created": "kept", "ver": "ignored"},
+        )
+        assert (
+            disk(path)
+            == (
+                "\ufeff---\r\n# c\r\nzip: 01234\r\ntype: new\r\nver: 1.10\r\ncreated: kept\r\n"
+                "updated: '2026-01-02T03:04:05Z'\r\n---\r\n\r\nnew"
+            ).encode()
+        )
+        await vault.replace_body(path, "again", properties={"updated": "later"})
+        assert disk(path).decode().endswith("updated: later\r\n---\r\n\r\nagain")
+
+    async def test_a_multi_line_entry_is_replaced_whole_and_a_block_is_created_when_missing(
+        self, vault, disk, sandbox: Sandbox
+    ):
+        path = await vault.write_note(
+            sandbox.path("m.md"), "---\ntype:\n  - a\n  - b\nkeep: 1\n---\nold"
+        )
+        await vault.replace_body(path, "new", properties={"type": "x y"})
+        assert disk(path) == b"---\ntype: x y\nkeep: 1\n---\nnew"
+        bare = await vault.write_note(sandbox.path("b.md"), "just text\n")
+        await vault.replace_body(bare, "new\n", defaults={"created": "c"}, properties={"u": 1})
+        assert disk(bare) == b"---\ncreated: c\nu: 1\n---\n\nnew\n"
+
+    async def test_a_property_that_is_not_a_plain_key_line_is_refused_or_left_alone(
+        self, vault, disk, sandbox: Sandbox
+    ):
+        flow = "---\n{type: old}\n---\nbody"
+        path = await vault.write_note(sandbox.path("f.md"), flow)
+        with pytest.raises(InvalidArgumentError, match="plain key"):
+            await vault.replace_body(path, "new", properties={"type": "x"})
+        assert disk(path).decode() == flow
+        await vault.replace_body(path, "new", defaults={"type": "x"})  # present: not a default
+        assert disk(path).decode() == "---\n{type: old}\n---\nnew"
+
+    async def test_refusals_leave_the_file_untouched(self, vault, cli, disk, sandbox: Sandbox):
+        bad = "---\ntitle: A\ntitle: B\n---\nbody"
+        path = await vault.write_note(sandbox.path("bad.md"), bad)
+        with pytest.raises(InvalidArgumentError, match="cannot parse"):
+            await vault.replace_body(path, "new", properties={"updated": "x"})
+        assert disk(path).decode() == bad
+        await put(cli, sandbox.path("pic.md"), BINARY)
+        with pytest.raises(InvalidArgumentError, match="not a text file"):
+            await vault.replace_body(sandbox.path("pic.md"), "new")
+        assert disk(sandbox.path("pic.md")) == BINARY
+        await put(cli, sandbox.path("a.txt"), "text")
+        with pytest.raises(InvalidArgumentError, match="markdown"):
+            await vault.replace_body(sandbox.path("a.txt"), "new")
+        with pytest.raises(InvalidArgumentError, match="property name"):
+            await vault.replace_body(path, "new", properties={"a: b": 1})
+        with pytest.raises(NoteNotFoundError):
+            await vault.replace_body(sandbox.path("nope.md"), "new")
+
+    async def test_concurrent_body_and_tag_edits_lose_nothing(self, vault, disk, sandbox: Sandbox):
+        path = await vault.write_note(sandbox.path("c.md"), "---\ntags: [base]\n---\n\nbody\n")
+        await asyncio.gather(
+            *(vault.replace_body(path, f"body {i}", properties={"n": i}) for i in range(3)),
+            *(vault.update_tags(path, add=[f"t{i}"]) for i in range(6)),
+        )
+        note = await vault.read_note(path)
+        assert sorted(note.frontmatter["tags"]) == sorted(["base", *(f"t{i}" for i in range(6))])
+        assert note.content.count("\nn:") == 1 and note.frontmatter["n"] in {0, 1, 2}
+        assert note.content.rsplit("---\n\n", 1)[1] in {"body 0", "body 1", "body 2"}
+
+
 # ---------------------------------------------------------------------------
 # links, backlinks, link text
 # ---------------------------------------------------------------------------
@@ -779,6 +921,49 @@ class TestLinks:
         assert text_a != text_b and "/" in text_a and "/" in text_b
         assert await vault.resolve_link(text_a, src) == p["dup_a"]
         assert await vault.resolve_link(text_b, src) == p["dup_b"]
+
+
+class TestAppendUnlessLinked:
+    async def notes(self, vault: Vault, sb: Sandbox) -> tuple[str, str]:
+        target = await vault.write_note(sb.path("Alpha.md"), "# Alpha\n")
+        source = await vault.write_note(sb.path("Src.md"), "# Src\n\n## See\n\nold\n\n## End\n")
+        return source, target
+
+    async def test_eight_concurrent_calls_add_one_line_and_report_one_add(
+        self, vault, disk, sandbox: Sandbox
+    ):
+        source, target = await self.notes(vault, sandbox)
+        results = await asyncio.gather(
+            *(vault.append_unless_linked(source, target, "- [[Alpha]]") for _ in range(8))
+        )
+        assert sorted(results) == [False] * 7 + [True]
+        assert disk(source).decode() == "# Src\n\n## See\n\nold\n\n## End\n- [[Alpha]]\n"
+
+    async def test_under_a_heading_and_any_kind_of_existing_link_counts(
+        self, vault, disk, sandbox: Sandbox
+    ):
+        source, target = await self.notes(vault, sandbox)
+        assert await vault.append_unless_linked(source, target, "- [[Alpha]]", "See")
+        assert disk(source).decode() == "# Src\n\n## See\n\nold\n- [[Alpha]]\n\n## End\n"
+        for existing in ("![[Alpha]]", "text [[Alpha|alias]]", "---\nrel: '[[Alpha]]'\n---\nx"):
+            note = await vault.write_note(sandbox.path("Other.md"), existing, overwrite=True)
+            assert not await vault.append_unless_linked(note, target, "- [[Alpha]]")
+            assert disk(note).decode() == existing
+        with pytest.raises(HeadingNotFoundError):
+            await vault.append_unless_linked(
+                source, sandbox.path("Other.md"), "- [[Other]]", "Nope"
+            )
+
+    async def test_a_binary_or_missing_file_is_refused_and_untouched(
+        self, vault, cli, disk, sandbox: Sandbox
+    ):
+        _, target = await self.notes(vault, sandbox)
+        await put(cli, sandbox.path("pic.md"), BINARY)
+        with pytest.raises(InvalidArgumentError, match="not a text file"):
+            await vault.append_unless_linked(sandbox.path("pic.md"), target, "- [[Alpha]]")
+        assert disk(sandbox.path("pic.md")) == BINARY
+        with pytest.raises(NoteNotFoundError):
+            await vault.append_unless_linked(sandbox.path("nope.md"), target, "- [[Alpha]]")
 
 
 # ---------------------------------------------------------------------------

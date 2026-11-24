@@ -23,12 +23,13 @@ import functools
 import json
 import re
 import unicodedata
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import date
 from pathlib import PurePosixPath
 from typing import Any
 
 from .exceptions import InvalidArgumentError, ObsidianCLIError
+from .memory import frontmatter_yaml
 from .models import (
     FileInfo,
     Link,
@@ -210,47 +211,103 @@ const addToSection = (text, cache, heading, content, create) => {
 };
 const appendTo = async (file, content, heading, opts) => {
   if (!heading) {
+    await readFile(file);  // refuses bytes that are not UTF-8 text: `process` would re-encode them
     await app.vault.process(file, (d) => joinAppend(d, content, opts.line));
     return;
   }
   await editWithCache(file, (text, cache) => addToSection(text, cache, heading, content, opts.create));
 };
+// Add `content` as a line unless the note already links to `target` (any link kind). The check and
+// the write are one `editWithCache` step, so concurrent callers cannot both add it.
+const appendUnlessLinked = async (file, target, content, heading) => {
+  let added = false;
+  await editWithCache(file, (text, cache) => {
+    added = false;
+    if (linksOf(cache, file.path).some((l) => l.target === target)) return null;
+    added = true;
+    return heading ? addToSection(text, cache, heading, content, false) : joinAppend(text, content, true);
+  });
+  return added;
+};
 """
 
-# The tags property is edited as text so every other frontmatter line stays byte-identical
-# (comments, key order, quoting, number formats, line endings, the BOM). What the tags ARE comes
-# from Obsidian's parse (`cache.frontmatter`) and where the block ends from `frontmatterPosition`,
-# so no YAML is interpreted here: the whole existing entry (key line + continuation lines) is
-# replaced by a fresh block list.
-_JS_TAGS = r"""
+# Frontmatter is edited as text so every line an edit does not own stays byte-identical (comments,
+# key order, quoting, number formats, line endings, the BOM). What the properties ARE comes from
+# Obsidian's parse (`cache.frontmatter`) and where the block ends from `frontmatterPosition`, so no
+# YAML is interpreted here: an entry (key line + continuation lines) is replaced as a whole.
+# A `---` block Obsidian did not parse into properties is refused, never edited around: a new
+# block put above it would turn it into body text.
+_JS_FRONTMATTER = r"""
 const EOL_RE = /\r?\n$/;
-const TAGS_KEY = /^(?:"tags"|'tags'|tags)(?=[ \t]*:(?:[ \t\r\n]|$))/i;
+// An opening `---` line up to the first line that is only `---` (the same rule as memory.py).
+const FENCED = /^---[ \t]*\r?\n(?:[^]*?\r?\n)?---[ \t]*(?=\r?\n|$)/;
+const keyRe = (key, flags) => new RegExp(`^(?:"${key}"|'${key}'|${key})(?=[ \\t]*:(?:[ \\t\\r\\n]|$))`, flags);
+const TAGS_KEY = keyRe('tags', 'i');
 const yamlTag = (t) =>
   /^\p{L}[\p{L}\p{N}_\/-]*$/u.test(t) && !/^(?:y|n|yes|no|true|false|on|off|null)$/i.test(t) ? t : JSON.stringify(t);
-const setTags = (text, cache, tags, hasKey) => {
+// The text around the frontmatter block: `lines` is the block (`---`, properties..., `---`; the
+// closing fence without its line break) or null when the note has none, `rest` what follows it.
+const splitFrontmatter = (file, text, cache) => {
   const bom = text.startsWith('\ufeff') ? '\ufeff' : '';
   const body = text.slice(bom.length);
-  const pos = cache.frontmatterPosition;
-  const lines = pos ? body.slice(0, pos.end.offset).split(/(?<=\n)/) : null;  // `---`, properties..., `---`
-  const eol = (lines ? lines[0] : body).includes('\r\n') ? '\r\n' : '\n';
-  const entry = (key) =>
-    tags.length ? [`${key}:${eol}`, ...tags.map((t) => `  - ${yamlTag(t)}${eol}`)] : [`${key}: []${eol}`];
-  if (!lines) return bom + `---${eol}` + entry('tags').join('') + `---${eol}` + body;
-  const inner = lines.slice(1, -1);
-  const at = inner.findIndex((l) => TAGS_KEY.test(l));
-  if (at < 0) {
-    if (hasKey) throw fail('INVALID', 'The tags property is not written as a plain key this tool can edit; fix it in Obsidian first.');
-    inner.push(...entry('tags'));
-  } else {
-    let end = at + 1;
-    for (let j = at + 1; j < inner.length; j++) {
-      const s = inner[j].replace(EOL_RE, '');
-      if (/^[ \t]/.test(s) || /^-([ \t]|$)/.test(s)) end = j + 1;
-      else if (s.trim()) break;
+  let block = cache.frontmatterPosition ? body.slice(0, cache.frontmatterPosition.end.offset) : null;
+  if (block === null) {
+    const m = FENCED.exec(body);
+    if (m) {
+      if (m[0].split(/(?<=\n)/).slice(1, -1).some((l) => l.trim() && !l.trimStart().startsWith('#'))) {
+        throw fail('INVALID', `${file.path} has frontmatter Obsidian cannot parse (invalid YAML, a duplicate key, or not a list of properties); fix it in Obsidian first.`);
+      }
+      block = m[0];  // empty or comments only: a block we can put properties into
     }
-    inner.splice(at, end - at, ...entry(TAGS_KEY.exec(inner[at])[0]));
   }
-  return bom + lines[0] + inner.join('') + lines.at(-1) + body.slice(pos.end.offset);
+  const lines = block === null ? null : block.split(/(?<=\n)/);
+  const eol = (lines ? lines[0] : body).includes('\r\n') ? '\r\n' : '\n';
+  return {bom, lines, eol, rest: body.slice(block === null ? 0 : block.length)};
+};
+const assemble = (fm, inner, rest) =>
+  fm.lines
+    ? fm.bom + fm.lines[0] + inner.join('') + fm.lines.at(-1) + rest
+    : fm.bom + `---${fm.eol}` + inner.join('') + `---${fm.eol}` + rest;
+const entryRange = (inner, re) => {
+  const at = inner.findIndex((l) => re.test(l));
+  if (at < 0) return null;
+  let end = at + 1;
+  for (let j = at + 1; j < inner.length; j++) {
+    const s = inner[j].replace(EOL_RE, '');
+    if (/^[ \t]/.test(s) || /^-([ \t]|$)/.test(s)) end = j + 1;
+    else if (s.trim()) break;
+  }
+  return [at, end];
+};
+// Replace the entry `re` finds with `build(key text)`'s lines, or add them at the end of the block.
+// `parsed`: Obsidian reads the property but no line starts with it (flow or odd layout): refuse.
+const putEntry = (inner, re, name, parsed, build) => {
+  const range = entryRange(inner, re);
+  if (range) inner.splice(range[0], range[1] - range[0], ...build(re.exec(inner[range[0]])[0]));
+  else if (parsed) throw fail('INVALID', `The ${name} property is not written as a plain key this tool can edit; fix it in Obsidian first.`);
+  else inner.push(...build(name));
+};
+const setTags = (fm, tags, parsed) => {
+  const inner = fm.lines ? fm.lines.slice(1, -1) : [];
+  putEntry(inner, TAGS_KEY, 'tags', parsed, (key) =>
+    tags.length ? [`${key}:${fm.eol}`, ...tags.map((t) => `  - ${yamlTag(t)}${fm.eol}`)] : [`${key}: []${fm.eol}`]);
+  return assemble(fm, inner, fm.rest);
+};
+// New text for a note: `body` after the frontmatter block (the blank line that follows it is kept,
+// or one is added), and each of `props` ({key, entry, replace}) put into the block: written over
+// the key's entry when `replace`, only when the key is missing otherwise.
+const replaceBody = (file, text, cache, body, props) => {
+  const fm = splitFrontmatter(file, text, cache);
+  const inner = fm.lines ? fm.lines.slice(1, -1) : [];
+  const have = cache.frontmatter ?? {};
+  for (const {key, entry, replace} of props) {
+    const lines = entry.replace(/\n/g, fm.eol).split(/(?<=\n)/);
+    const re = keyRe(key);
+    if (replace) putEntry(inner, re, key, Object.hasOwn(have, key), () => lines);
+    else if (!entryRange(inner, re) && !Object.hasOwn(have, key)) inner.push(...lines);
+  }
+  const gap = fm.lines ? /^[ \t]*\r?\n(?:\r?\n)?/.exec(fm.rest)?.[0] ?? fm.eol + fm.eol : fm.eol;
+  return assemble(fm, inner, gap + body);
 };
 """
 
@@ -300,6 +357,7 @@ _OBSIDIAN_EXTENSIONS = frozenset(
     | {"mp3", "wav", "m4a", "3gp", "flac", "ogg", "oga", "opus", "mp4", "webm", "ogv", "mov", "mkv"}
 )
 _TAG = re.compile(r"^[\w/-]+$")
+_PROPERTY_KEY = re.compile(r"^[A-Za-z][\w-]*$")
 
 
 def _clean_path(path: str, *, folder: bool = False) -> str:
@@ -454,7 +512,8 @@ class Vault:
         at the end of that section, before the next heading of the same or a higher level.
         A missing heading raises HeadingNotFoundError, or with `create_heading` is added at the
         end of the note (`##` unless the heading carries its #s) in the same atomic edit.
-        `as_line` ends the content with a newline when the note ended with one.
+        `as_line` ends the content with a newline when the note ended with one. A file that is not
+        UTF-8 text is refused with InvalidArgumentError, never rewritten.
         """
         await self._eval(
             "await appendTo(getFile(input.path), input.content, input.heading, input); return null;",
@@ -466,6 +525,66 @@ class Vault:
                 "line": as_line,
             },
             uses=_JS_APPEND,
+        )
+
+    async def append_unless_linked(
+        self, path: str, target: str, content: str, heading: str | None = None
+    ) -> bool:
+        """Append `content` as a line unless the note already links to `target`; True if added.
+
+        `target` is a vault path. The check (every link, embed and frontmatter link, resolved the
+        way Obsidian resolves them) and the write are one atomic edit, so concurrent calls for
+        one target add exactly one line. With `heading` the line goes at the end of that section,
+        which must exist (HeadingNotFoundError otherwise). Same file rules as `append`.
+        """
+        return bool(
+            await self._eval(
+                "return await appendUnlessLinked(getFile(input.path), input.target, input.content, input.heading);",
+                {
+                    "path": _clean_path(path),
+                    "target": _clean_path(target),
+                    "content": content,
+                    "heading": heading or None,
+                },
+                uses=_JS_APPEND,
+            )
+        )
+
+    async def replace_body(
+        self,
+        path: str,
+        body: str,
+        *,
+        properties: Mapping[str, object] | None = None,
+        defaults: Mapping[str, object] | None = None,
+    ) -> None:
+        """Replace the text after the frontmatter block and set properties, in one atomic edit.
+
+        `properties` are written (the key's whole entry is replaced, or added at the end of the
+        block), `defaults` only where the key is missing. Every other frontmatter line, the line
+        endings and the BOM stay byte-identical; the blank line after the block is kept. A note
+        without a block gets one. Raises InvalidArgumentError for a file that is not UTF-8
+        markdown text, a `---` block Obsidian cannot read as properties, or a property it cannot
+        edit in place (flow-style or nested layouts).
+        """
+        props = [
+            {"key": key, "entry": frontmatter_yaml({key: value}), "replace": replace}
+            for source, replace in ((defaults, False), (properties, True))
+            for key, value in (source or {}).items()
+        ]
+        for prop in props:
+            if not _PROPERTY_KEY.match(str(prop["key"])):
+                raise InvalidArgumentError(f"Invalid property name {prop['key']!r}.")
+        await self._eval(
+            r"""
+            const file = getFile(input.path);
+            if (file.extension !== 'md') throw fail('INVALID', 'Only markdown notes have frontmatter.');
+            await editWithCache(file, (text, cache) => replaceBody(file, text, cache, input.body, input.props));
+            return null;
+            """,
+            {"path": _clean_path(path), "body": body, "props": props},
+            uses=_JS_FRONTMATTER,
+            idempotent=True,  # the same body and properties give the same text, however often
         )
 
     async def delete(self, path: str, permanent: bool = False) -> None:
@@ -488,8 +607,10 @@ class Vault:
         Tags are read from Obsidian's parsed `tags` property (any key case); when they change,
         that whole entry is rewritten as a block list and every other line stays byte-identical.
         Tags are validated like Obsidian reads them, `#` stripped, repeats ignoring case dropped.
-        Raises InvalidArgumentError for no tags, a tag in both lists, or a `tags` property that
-        is not a list. Returns the tags after the call and what actually changed.
+        Raises InvalidArgumentError for no tags, a tag in both lists, a file that is not UTF-8
+        text, a `tags` property that is not a list, or a `---` block at the top that Obsidian
+        cannot read as properties (a second block would hide it). Returns the tags after the call
+        and what actually changed.
         """
         to_add, to_remove = _clean_tags(add), _clean_tags(remove)
         if not to_add and not to_remove:
@@ -506,6 +627,7 @@ class Vault:
             const drop = new Set(input.remove.map(norm));
             let result = null;
             await editWithCache(file, (text, cache) => {
+              const fm = splitFrontmatter(file, text, cache);
               const {key, items, ok} = fmTags(cache.frontmatter);
               if (!ok) throw fail('INVALID', 'The tags property is not a list this tool can edit; fix it in Obsidian first.');
               const current = cleanTags(items);
@@ -514,12 +636,12 @@ class Vault:
               const removed = current.filter((t) => drop.has(norm(t)));
               const tags = [...current.filter((t) => !drop.has(norm(t))), ...added];
               result = {tags, added, removed};
-              return added.length || removed.length ? setTags(text, cache, tags, key !== undefined) : null;
+              return added.length || removed.length ? setTags(fm, tags, key !== undefined) : null;
             });
             return result;
             """,
             {"path": _clean_path(path), "add": to_add, "remove": to_remove},
-            uses=_JS_TAGS,
+            uses=_JS_FRONTMATTER,
             idempotent=True,
         )
         return TagChange.model_validate(result)

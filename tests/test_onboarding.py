@@ -187,3 +187,13 @@ async def test_memories_name_real_folders_and_carry_frontmatter() -> None:
         assert meta["created"] == meta["updated"] == NOW
         assert meta["auto_generated"] is True
         assert body.startswith("# ")
+
+
+async def test_generated_memories_hold_no_tag_text_for_obsidian_to_index() -> None:
+    files = {"a.md": "#fresh #proj/x #proj/y #proj/z", "b.md": "#fresh"}
+    a = await analyse(files)
+    assert a.tag_prefixes == ["proj"]
+    overview, conventions = render_overview(a, NOW), render_conventions(a, NOW)
+    assert "`#fresh` (2 notes)" in overview and "**Tag Prefixes**: `#proj/`" in overview
+    generated = FakeVault({"o.md": overview, "c.md": conventions})
+    assert await generated.tags() == {}

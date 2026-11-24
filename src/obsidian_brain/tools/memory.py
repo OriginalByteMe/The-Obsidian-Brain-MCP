@@ -189,23 +189,18 @@ def register(server: MCPServer) -> None:
                 f"Memory {_name(found)!r} already uses the slug '{slugify(name)}'. "
                 f"Write to {_name(found)!r} to update it, or pick a different name."
             )
-        # lean: read-modify-write with the whole file replaced in one write; two concurrent writes
-        # to the same memory are last-writer-wins, and frontmatter comments are not preserved
-        # (values are). Upgrade: a Vault call that replaces only the body inside app.vault.process.
-        note = await vault.read_note(found.path)
-        block = split_frontmatter(note.content)[0]
-        if not note.frontmatter and any(
-            line.strip() and not line.lstrip().startswith("#") for line in block.splitlines()[1:-1]
-        ):
-            raise InvalidArgumentError(
-                f"{found.path} has frontmatter Obsidian cannot parse; fix it in Obsidian first."
-            )
-        frontmatter = {**note.frontmatter, "name": shown}
-        frontmatter.setdefault("created", note.modified.strftime("%Y-%m-%dT%H:%M:%SZ"))
-        frontmatter["updated"] = now
+        # One atomic edit inside Obsidian: the body is replaced and only `type`, `updated` and, where
+        # missing, `name` and `created` are written; every other frontmatter line stays as it is.
+        properties: dict[str, object] = {"updated": now}
         if memory_type:
-            frontmatter["type"] = memory_type
-        await vault.write_note(found.path, memory_text(frontmatter, content), overwrite=True)
+            properties["type"] = memory_type
+        modified = found.modified.strftime("%Y-%m-%dT%H:%M:%SZ")
+        await vault.replace_body(
+            found.path,
+            content,
+            properties=properties,
+            defaults={"name": shown, "created": modified},
+        )
         return MemoryWritten(name=shown, path=found.path, action="updated")
 
     @server.tool(annotations=DESTRUCTIVE)

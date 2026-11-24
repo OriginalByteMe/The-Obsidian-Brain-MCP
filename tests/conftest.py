@@ -41,6 +41,9 @@ if (folder) await app.vault.delete(folder, true);
 return null;
 """
 
+# Not UTF-8, so Obsidian cannot treat it as text whatever the file is called.
+BINARY = b"\x89PNG\r\n\x1a\n\x00\xff\xfe\xfd\x80\x81"
+
 
 @dataclass(frozen=True)
 class Sandbox:
@@ -138,6 +141,53 @@ async def disk(cli: ObsidianCLI) -> Callable[[str], bytes]:
     """Read a vault file's raw bytes straight from the vault folder on disk."""
     base = Path(await cli.eval("return app.vault.adapter.basePath;"))
     return lambda path: (base / path).read_bytes()
+
+
+class LocalTrash:
+    """Obsidian's trash, observable: the vault's own `.trash/` folder (see `local_trash`)."""
+
+    def __init__(self, cli: ObsidianCLI) -> None:
+        self.cli = cli
+        self.names: list[str] = []
+
+    def name(self, stem: str) -> str:
+        """A unique file name for a note this test will delete."""
+        self.names.append(f"{stem}-{uuid.uuid4().hex[:8]}.md")
+        return self.names[-1]
+
+    async def text(self, name: str) -> str | None:
+        """The text of `name` in the trash, or None when it is not there."""
+        return await self.cli.eval(
+            """
+            const path = `.trash/${input}`;
+            return (await app.vault.adapter.exists(path)) ? await app.vault.adapter.read(path) : null;
+            """,
+            name,
+        )  # type: ignore[no-any-return]
+
+
+@pytest.fixture
+async def local_trash(cli: ObsidianCLI):
+    """Send trashed files to the vault's `.trash/` folder, which a test can read.
+
+    The disposable vaults are set to the macOS system trash, which a test cannot see. The option
+    is restored afterwards and every file the test trashed is removed from `.trash/`.
+    """
+    previous = await cli.eval(
+        "const o = app.vault.getConfig('trashOption'); app.vault.setConfig('trashOption', 'local'); return o;"
+    )
+    trash = LocalTrash(cli)
+    yield trash
+    await cli.eval(
+        """
+        app.vault.setConfig('trashOption', input.previous);
+        for (const name of input.names) {
+          if (await app.vault.adapter.exists(`.trash/${name}`)) await app.vault.adapter.remove(`.trash/${name}`);
+        }
+        return null;
+        """,
+        {"previous": previous, "names": trash.names},
+    )
 
 
 @pytest.fixture

@@ -285,11 +285,12 @@ def render_overview(a: VaultAnalysis, now: str) -> str:
         lines.extend(f"- `{folder}/`: {purpose}" for folder, purpose in a.folder_purposes.items())
         lines.append("")
     lines += [f"**Folder Depth**: {a.depth_levels} levels", "", "## Tag Conventions", ""]
+    # Tags are code spans: bare `#tag` text in a note is a real tag in Obsidian's index.
     if a.tag_prefixes:
-        lines += [f"**Tag Prefixes**: {', '.join(f'#{p}/' for p in a.tag_prefixes)}", ""]
+        lines += [f"**Tag Prefixes**: {', '.join(f'`#{p}/`' for p in a.tag_prefixes)}", ""]
     if a.top_tags:
         lines.append("**Top 10 Tags**:")
-        lines.extend(f"- #{t.tag} ({t.count} notes)" for t in a.top_tags[:10])
+        lines.extend(f"- `#{t.tag}` ({t.count} notes)" for t in a.top_tags[:10])
         lines.append("")
     lines += ["## Naming Conventions", ""]
     lines.extend(f"- {p}" for p in a.naming_patterns)

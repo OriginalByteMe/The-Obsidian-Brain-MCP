@@ -344,7 +344,7 @@ If `OBSIDIAN_VAULT` is unset, you **must** have the vault open in Obsidian. The 
 
 Failures are reported as MCP tool errors in plain words: Obsidian not running, CLI disabled, vault not found, note not found, a note that already exists, a heading that is missing, a call that is too large. An error names the path, heading, link or tag in question, but never contains note content or the code sent to Obsidian.
 
-Timeouts: every call is bounded (20 s). A read, a search or an idempotent edit (`update_tags`, `write_note` with `overwrite=true`) that times out is retried once, so the worst case is twice the timeout. Every other write (`append_to_note`, `append_to_daily`, `add_link`, `write_note` without `overwrite`, `delete_note`) is never retried, and its timeout error says the write may have happened: read the note before trying again. The `Received CLI command [...]` lines Obsidian echoes to stdout when several CLI calls run at once are stripped from the output.
+Timeouts: every call is bounded (20 s). A read, a search or an idempotent edit (`update_tags`, `write_note` with `overwrite=true`, `write_memory` on an existing memory) that times out is retried once, so the worst case is twice the timeout. Every other write (`append_to_note`, `append_to_daily`, `add_link`, `write_note` without `overwrite`, `delete_note`) is never retried, and its timeout error says the write may have happened: read the note before trying again. The `Received CLI command [...]` lines Obsidian echoes to stdout when several CLI calls run at once are stripped from the output.
 
 ### Troubleshooting
 
@@ -383,7 +383,7 @@ Every tool returns structured data, has typed and described parameters, and carr
 | `list_vault_files` | List files under a folder, recursively, one page at a time (`limit`, `offset`; returns `total`) |
 | `get_note` | Read a note: exact text, frontmatter, tags (inline too), links and headings |
 | `write_note` | Create a note, or replace one with `overwrite=true`. Content is stored verbatim: nothing is added to it |
-| `append_to_note` | Append atomically, at the end or at the end of a named heading's section |
+| `append_to_note` | Append atomically, at the end or at the end of a named heading's section. A file that is not UTF-8 text (an image, a PDF) is refused, never rewritten |
 | `delete_note` | Move a note to Obsidian's trash (`permanent=true` deletes for good) |
 
 ### Links, Tags and Search
@@ -391,7 +391,7 @@ Every tool returns structured data, has typed and described parameters, and carr
 | Tool | Description |
 |------|-------------|
 | `get_links` | Backlinks and outgoing links of a note, 1-3 hops deep |
-| `add_link` | Append a `[[wikilink]]` to a note; the target is resolved like Obsidian does and the call is idempotent |
+| `add_link` | Append a `[[wikilink]]` to a note; the target is resolved like Obsidian does. The "already linked?" check and the write are one atomic edit, so the call is idempotent even when repeated concurrently |
 | `update_tags` | Add or remove frontmatter tags without touching the rest of the file |
 | `list_all_tags` | Every tag (inline and frontmatter) with Obsidian's occurrence counts |
 | `get_notes_by_tag` | Notes with a tag, nested tags included by default |
@@ -419,10 +419,11 @@ Memories live in `Obsidian Brain/memories/` as ordinary notes, so you can read a
 ### Behaviour notes
 
 - **Paths** are vault-relative with forward slashes and are Unicode NFC-normalised on input, so `Café.md` typed with a combining accent and with a precomposed `é` is one note. `write_note` appends `.md` unless the path ends in a file type Obsidian opens (`md`, `canvas`, `base`, images, audio, video, `pdf`; case-insensitive): `Learning Node.js` becomes `Learning Node.js.md`, and `data.json` becomes `data.json.md`.
-- **`update_tags`** rewrites only the `tags` entry of the frontmatter, as a block list; every other frontmatter line (comments, quoting, key order) and the whole body stay byte-identical. Inline `#tags` in the body are never edited.
+- **`update_tags`** rewrites only the `tags` entry of the frontmatter, as a block list; every other frontmatter line (comments, quoting, key order) and the whole body stay byte-identical. Inline `#tags` in the body are never edited. A note whose top `---` block Obsidian cannot read as properties (invalid YAML, a duplicate key) is refused with an error rather than getting a second block above it; an empty or comment-only block gets the tags inside it.
 - **`list_all_tags`** reports `occurrences`, counted the way Obsidian's tag pane counts them (a tag used twice in one note counts twice); `vault://tags` carries the same counts.
 - **`search_content`** caps each matching line at 300 characters around the match (`…` marks the cut), so one very long line cannot flood the result.
-- **`write_memory`** on an existing memory reads, then rewrites the whole file: two concurrent writes to the same memory are last-writer-wins, and comments inside the memory's frontmatter are dropped (the values are kept).
+- **`write_memory`** on an existing memory is one atomic edit inside Obsidian: it replaces the body and writes only `updated`, `type` (when given) and, where missing, `name` and `created`. Every other frontmatter line (comments, `01234`, `1.10`, empty values, flow lists) stays byte-identical, and a concurrent `update_tags` or another `write_memory` on the same memory loses nothing (the last body written wins). A memory whose frontmatter Obsidian cannot parse is refused.
+- **Generated notes** (`run_onboarding`, `build_knowledge_base`) write tag names as code spans (`` `#tag` ``), because bare `#tag` text in a note is a real tag in Obsidian's index and would inflate `list_all_tags` and `get_notes_by_tag`.
 - **Daily tools** (`get_daily_note`, `append_to_daily`) use the **Daily notes** core plugin's folder, format and template, so that plugin must be enabled; the Periodic Notes community plugin is not read.
 
 ### Upgrading from 0.1

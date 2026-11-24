@@ -187,15 +187,13 @@ async def link_note(vault: Vault, path: str, target: str, heading: str | None) -
         raise InvalidArgumentError(
             "`target` must be a plain note name or path: no [[ ]], '|', '#', '^' or line breaks."
         )
-    existing = await vault.outgoing_links(path)  # NoteNotFoundError when the source is missing
     resolved = await vault.resolve_link(target.strip(), path)
     text = await vault.link_text(resolved, path)
     if _UNSAFE_LINK.search(text):
         raise InvalidArgumentError(f"'{resolved}' has characters that cannot be written in a link.")
     link = f"[[{text}]]"
-    added = all(known.target != resolved for known in existing)
-    if added:
-        await vault.append(path, f"- {link}", heading, as_line=True)
+    # The "already linked" check and the write are one atomic edit: concurrent calls add one line.
+    added = await vault.append_unless_linked(path, resolved, f"- {link}", heading)
     return LinkAdded(path=path, target=resolved, link=link, added=added)
 
 
