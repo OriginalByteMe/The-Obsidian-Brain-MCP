@@ -6,6 +6,9 @@ rather than the CLI's text commands. `ObsidianCLI.eval` sends each snippet to a 
 installs it there as a function, and calls it afterwards with a short command: the payload goes
 in as one JSON literal, the result comes back as one JSON line, and a thrown error carries a
 `code` that maps to a typed exception. Evals run one at a time (see `MAX_EVALS_IN_FLIGHT`).
+Obsidian sometimes runs a call and never answers it; every eval carries a request id, the window
+remembers what became of it, and a call that has no reply after a short grace asks the window
+(see `REPLY_GRACE`) instead of waiting out the timeout.
 
 Every subprocess runs with list-form argv (never a shell), stdin closed, and an
 explicit timeout; a timed-out or cancelled call kills and reaps its child.
@@ -20,6 +23,8 @@ import json
 import os
 import re
 import shutil
+import uuid
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -105,6 +110,14 @@ MAX_PAYLOAD_BYTES = 900_000
 # can still overlap with ours.
 MAX_EVALS_IN_FLIGHT = 1
 
+# How long an `eval` may go without a reply before the window is asked what became of it, and how
+# often it is asked again while the call is still running. Obsidian runs some calls and never
+# answers them (counted inside the window: 5 of 4,500 sequential calls on two windows, about 1 in
+# 900, and more under load; every one had run, none was answered late, and the CLI waits for its
+# reply forever). Calls that are answered take a median of 11-22 ms, 99% under 0.35 s, the slowest
+# 0.87 s. Asking early is harmless: a call that is merely slow is reported as running and waited for.
+REPLY_GRACE = 2.0
+
 # Pause before the one retry of a cold-start "command not found" (see ObsidianCLI.run).
 _COLD_START_RETRY_DELAY = 0.75
 
@@ -122,30 +135,58 @@ _EVAL_ERRORS: dict[str, type[ObsidianError]] = {
     "INVALID": InvalidArgumentError,
 }
 
-# What `eval` installs in a window, once, under `window.__brain`: `run(key, input)` calls the
+# What `eval` installs in a window, once, under `window.__brain`: `run(key, input, id)` calls the
 # function stored under `key` and returns the answer as one JSON string. A new text of this
 # runner changes `rev`, so a window that holds an older one gets it replaced (and the functions
 # installed with it dropped). An error message never carries the vault's absolute path (Node's
 # OS errors do: ENAMETOOLONG, EACCES, ...): it is cut out, which leaves the vault-relative path.
+# `window.__brainReqs` (it outlives a replaced runner) remembers every request id: `running`, or
+# `done` with the answer, so a call whose reply never reached the CLI can be asked for (_ASK). An
+# id that is already known never starts: that is what makes a cancelled id safe to send again
+# under a new one. The log is bounded: 128 entries, none older than 2 minutes once finished (a
+# call still running is never dropped), and an answer over 128 KB is not kept (`answer: null`).
 _RUNNER = """\
 if (window.__brain?.rev !== '@REV@') {
   window.__brain = {
     rev: '@REV@',
     fns: {},
-    async run(key, input) {
+    async run(key, input, id) {
+      const reqs = (window.__brainReqs ??= new Map());
+      if (reqs.has(id)) return '{"ok":false,"cancelled":true}';
+      reqs.set(id, {state: 'running'});
+      let answer;
       try {
-        return JSON.stringify({ok: true, value: (await this.fns[key](input)) ?? null});
+        answer = JSON.stringify({ok: true, value: (await this.fns[key](input)) ?? null});
       } catch (e) {
         const base = app.vault?.adapter?.basePath;
         let message = String(e?.message ?? e);
         if (base) message = message.split(base + '/').join('').split(base).join('');
-        return JSON.stringify({ok: false, error: {code: e?.code ?? null, message}});
+        answer = JSON.stringify({ok: false, error: {code: e?.code ?? null, message}});
       }
+      reqs.set(id, {state: 'done', at: Date.now(), answer: answer.length <= 131072 ? answer : null});
+      for (const [other, req] of reqs) {
+        if (req.state === 'running') continue;
+        if (reqs.size <= 128 && Date.now() - req.at < 120000) break;
+        reqs.delete(other);
+      }
+      return answer;
     },
   };
 }"""
 _RUNNER_REV = hashlib.sha256(_RUNNER.encode()).hexdigest()[:12]
 _RUNNER = _RUNNER.replace("@REV@", _RUNNER_REV)
+
+# What the server asks the window about a request that has no reply: `running`, `done` (with the
+# answer, null when it was too large to keep) or `cancelled`. A request the window has never seen
+# is recorded as cancelled by the question itself, so it can never start afterwards; the server
+# then sends it again under a new id. Asking twice gives the same answer.
+_ASK = """\
+(() => {
+  const reqs = (window.__brainReqs ??= new Map());
+  const req = reqs.get('@ID@') ?? {state: 'cancelled', at: Date.now()};
+  reqs.set('@ID@', req);
+  return JSON.stringify({state: req.state, answer: req.answer ?? null});
+})()"""
 
 # The answer of a call to a function the window does not hold (never installed, window reloaded,
 # or another server version replaced the runner).
@@ -253,6 +294,10 @@ def find_cli_binary() -> str:
     raise CLINotFoundError(searched_paths="PATH")
 
 
+class _NeverRan(Exception):
+    """The window has not run a request and, now that it was asked, never will (see `_ASK`)."""
+
+
 class ObsidianCLI:
     """Runs Obsidian CLI commands and `eval` snippets.
 
@@ -262,6 +307,9 @@ class ObsidianCLI:
         timeout: Default timeout in seconds for one CLI call.
         max_evals: How many `eval` calls may run at once (see MAX_EVALS_IN_FLIGHT); the others
             wait their turn, and the wait does not count against `timeout`.
+        reply_grace: Seconds an `eval` may go without a reply before the window is asked what
+            became of it (see REPLY_GRACE). A call whose `timeout` is no longer than this is
+            never asked about.
     """
 
     def __init__(
@@ -270,21 +318,54 @@ class ObsidianCLI:
         vault: str | None = None,
         timeout: float = 20.0,
         max_evals: int = MAX_EVALS_IN_FLIGHT,
+        reply_grace: float = REPLY_GRACE,
     ):
         self.cli_path = cli_path
         self.vault = vault if vault is not None else os.environ.get("OBSIDIAN_VAULT")
         self.timeout = timeout
+        self.reply_grace = reply_grace
         self._eval_slots = asyncio.Semaphore(max_evals)
+        # One question about a request at a time: questions overlapping each other (and the
+        # call they are about) could end out of order and leave a console swap behind.
+        self._questions = asyncio.Lock()
         # The snippets this window is believed to hold, so a repeat call can skip sending them.
         # Only a hint: a reloaded window answers `_MISSING` and gets the snippet again.
         self._installed: set[str] = set()
 
-    async def _run_once(self, cmd: list[str], command: str, timeout: float) -> str:
+    def _command(self, args: tuple[str, ...]) -> list[str]:
+        """The argv of one CLI call: the binary (found the first time), the vault, then `args`."""
+        cli_path = self.cli_path
+        if cli_path is None:
+            cli_path = find_cli_binary()
+            self.cli_path = cli_path
+        else:
+            cli_path = _validate_explicit_cli_path(cli_path)
+
+        cmd = [cli_path]
+        if self.vault:
+            cmd.append(f"vault={self.vault}")
+        cmd.extend(args)
+        return cmd
+
+    async def _run_once(
+        self,
+        cmd: list[str],
+        command: str,
+        timeout: float,
+        request_id: str | None = None,
+        deadline: float | None = None,
+    ) -> str:
         """Launch one CLI subprocess, wait for it, and return its stdout.
 
+        `request_id` is the id an `eval`'s code carries: a call with no reply after
+        `reply_grace` asks the window what became of it (see `_wait`), and the answer of a call
+        that finished without being answered is returned as if the CLI had printed it.
+        `deadline` (a loop time, `now + timeout` by default) ends the wait.
+
         Raises CLITimeoutError on timeout and on any other failure the CLI reports
-        through stderr or the exit code. The child is always killed and reaped
-        before this returns or raises, including when the caller is cancelled.
+        through stderr or the exit code, `_NeverRan` when the window never ran the request.
+        The child is always killed and reaped before this returns or raises, including when
+        the caller is cancelled.
         """
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -303,10 +384,12 @@ class ObsidianCLI:
                 ) from exc
             raise ObsidianCLIError(f"Could not start the Obsidian CLI: {exc.strerror}.") from exc
 
+        reply = asyncio.ensure_future(proc.communicate())
+        if deadline is None:
+            deadline = asyncio.get_running_loop().time() + timeout
+        recovered: str | None = None
         try:
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-        except TimeoutError:
-            raise CLITimeoutError(timeout=timeout, command=command) from None
+            recovered = await self._wait(reply, command, timeout, request_id, deadline)
         finally:
             if proc.returncode is None:
                 with contextlib.suppress(ProcessLookupError):
@@ -315,7 +398,13 @@ class ObsidianCLI:
                 # must still wait out the killed child, or it stays a zombie.
                 with anyio.CancelScope(shield=True):
                     await proc.wait()
+            reply.cancel()
+            with anyio.CancelScope(shield=True):
+                await asyncio.wait({reply})
+        if recovered is not None:
+            return f"=> {recovered}"
 
+        stdout, stderr = reply.result()
         stderr_text = stderr.decode(errors="replace").strip()
         if proc.returncode != 0 or stderr_text:
             if _CLI_NOT_RUNNING_RE.match(stderr_text):
@@ -329,22 +418,118 @@ class ObsidianCLI:
             raise ObsidianCLIError(_OBSIDIAN_APP_PREAMBLE_MESSAGE)
         return decoded_stdout
 
-    async def _attempt(self, cmd: list[str], command: str, timeout: float, idempotent: bool) -> str:
-        """`_run_once`, repeated once on timeout when the command is safe to repeat.
+    async def _wait(
+        self,
+        reply: asyncio.Future[tuple[bytes, bytes]],
+        command: str,
+        timeout: float,
+        request_id: str | None,
+        deadline: float,
+    ) -> str | None:
+        """Wait for the CLI child's reply; None once it has come.
 
-        Obsidian occasionally executes a CLI command but never answers it (about 1 call in
-        800 under load, measured: the command's effect is visible, the CLI waits forever).
-        Repeating a read or an idempotent edit is harmless; anything else must not be repeated.
-        An `eval` holds its slot through the repeat: nothing else runs in the window before it.
+        Obsidian runs some calls and never answers them, and the CLI waits forever. A call with
+        a `request_id` that has no reply after `reply_grace` is therefore not just waited for:
+        the window is asked about it. Finished: its answer is returned and the caller kills the
+        child. Still running: it is waited for and asked about again every `reply_grace`, up to
+        the deadline. Never ran: `_NeverRan`, and the window has marked the id cancelled, so it
+        cannot start later.
+        """
+        loop = asyncio.get_running_loop()
+        while True:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                raise CLITimeoutError(timeout=timeout, command=command)
+            patience = remaining if request_id is None else min(remaining, self.reply_grace)
+            await asyncio.wait({reply}, timeout=patience)
+            if reply.done():
+                return None
+            remaining = deadline - loop.time()
+            if request_id is None or remaining <= 0:
+                continue
+            asked = await self._ask(request_id, min(self.reply_grace, remaining))
+            if reply.done():
+                return None
+            if asked is None:  # the question went unanswered too: ask again
+                continue
+            state, answer = asked
+            if state == "cancelled":
+                raise _NeverRan
+            if state == "done":
+                if answer is None:  # it ran, but its answer was too large for the window to keep
+                    elapsed = timeout - (deadline - loop.time())
+                    raise CLITimeoutError(timeout=round(elapsed, 1), command=command)
+                return answer
+
+    async def _ask(self, request_id: str, timeout: float) -> tuple[str, str | None] | None:
+        """What became of a request, as `(state, answer)` (see `_ASK`); None if unanswered."""
+        cmd = self._command(("eval", f"code={_ASK.replace('@ID@', request_id)}"))
+        async with self._questions:
+            try:
+                output = await self._run_once(cmd, "eval", timeout)
+            except CLITimeoutError:
+                return None
+        text = output.strip()
+        try:
+            if not text.startswith("=> "):
+                raise ValueError
+            reply = json.loads(text[3:])
+            state, answer = reply["state"], reply["answer"]
+            if state not in ("running", "done", "cancelled") or not (
+                answer is None or isinstance(answer, str)
+            ):
+                raise ValueError
+        except (ValueError, KeyError, TypeError):
+            raise ObsidianCLIError(
+                f"Unreadable reply to a question about a request: {_cap(text)}"
+            ) from None
+        return state, answer
+
+    async def _request(
+        self,
+        args_for: Callable[[str], tuple[str, ...]],
+        command: str,
+        timeout: float,
+        tracked: bool,
+    ) -> str:
+        """One CLI call. A tracked one (an `eval` whose code carries the id it is given) is sent
+        again under a new id when the window turns out never to have run it."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while True:
+            request_id = uuid.uuid4().hex[:16] if tracked else None
+            cmd = self._command(args_for(request_id or ""))
+            try:
+                return await self._run_once(cmd, command, timeout, request_id, deadline)
+            except _NeverRan:
+                if loop.time() >= deadline:
+                    raise CLITimeoutError(timeout=timeout, command=command) from None
+
+    async def _attempt(
+        self,
+        args_for: Callable[[str], tuple[str, ...]],
+        command: str,
+        timeout: float,
+        idempotent: bool,
+        tracked: bool,
+    ) -> str:
+        """`_request`, repeated once on timeout when the command is safe to repeat.
+
+        A reply Obsidian never sends is recovered long before the timeout for an `eval` (see
+        `_wait`); for any other command, and for an `eval` the window cannot be asked about
+        (it does not answer at all, or its answer was too large to keep), the call waits out the
+        timeout. Repeating a read or an idempotent edit is then harmless; anything else must
+        not be repeated. An `eval` holds its slot through the repeat: nothing else runs in the
+        window before it.
         """
         slot = self._eval_slots if command == "eval" else contextlib.nullcontext()
         async with slot:
             try:
-                return await self._run_once(cmd, command, timeout)
+                return await self._request(args_for, command, timeout, tracked)
             except CLITimeoutError:
                 if not idempotent:
                     raise
-                return await self._run_once(cmd, command, timeout)
+                return await self._request(args_for, command, timeout, tracked)
 
     async def run(self, *args: str, timeout: float | None = None, idempotent: bool = False) -> str:
         """Execute a CLI command and return stdout.
@@ -367,22 +552,26 @@ class ObsidianCLI:
             CLITimeoutError: The command did not finish in time.
             CLINotFoundError: The CLI binary cannot be located.
         """
-        cli_path = self.cli_path
-        if cli_path is None:
-            cli_path = find_cli_binary()
-            self.cli_path = cli_path
-        else:
-            cli_path = _validate_explicit_cli_path(cli_path)
+        return await self._run(args, lambda _: args, timeout, idempotent, tracked=False)
 
-        cmd = [cli_path]
-        if self.vault:
-            cmd.append(f"vault={self.vault}")
-        cmd.extend(args)
+    async def _run(
+        self,
+        args: tuple[str, ...],
+        args_for: Callable[[str], tuple[str, ...]],
+        timeout: float | None,
+        idempotent: bool,
+        tracked: bool,
+    ) -> str:
+        """`run` for a call whose arguments depend on its request id (see `_request`).
 
+        `args` are the arguments as far as classifying the output needs them: the command name.
+        `tracked` says `args_for` puts the request id it is given into the call, so that a reply
+        that never arrives can be recovered.
+        """
         effective_timeout = timeout if timeout is not None else self.timeout
         command = args[0] if args else ""
 
-        output = await self._attempt(cmd, command, effective_timeout, idempotent)
+        output = await self._attempt(args_for, command, effective_timeout, idempotent, tracked)
         error = _classify_stdout_error(output, args)
         not_found = _COMMAND_NOT_FOUND_RE.match(output.strip())
         if error is not None and not_found and not_found.group("command") == command:
@@ -393,16 +582,28 @@ class ObsidianCLI:
             # found" -- one short retry clears the race. Bounded to a
             # single retry so a genuinely unknown command still fails fast.
             await asyncio.sleep(_COLD_START_RETRY_DELAY)
-            output = await self._attempt(cmd, command, effective_timeout, idempotent)
+            output = await self._attempt(args_for, command, effective_timeout, idempotent, tracked)
             error = _classify_stdout_error(output, args)
         if error is not None:
             raise error
         return output
 
-    async def _send(self, code: str, timeout: float | None, idempotent: bool) -> dict[str, Any]:
-        """Run one `eval` and parse its output into the envelope `{ok, value | error}`."""
+    async def _send(
+        self, code_for: Callable[[str], str], timeout: float | None, idempotent: bool
+    ) -> dict[str, Any]:
+        """Run one `eval` and parse its output into the envelope `{ok, value | error}`.
+
+        `code_for` makes the code for a request id: the id goes into the call, and a call the
+        window never ran is sent again under a new one (see `_wait`).
+        """
         output = (
-            await self.run("eval", f"code={code}", timeout=timeout, idempotent=idempotent)
+            await self._run(
+                ("eval",),
+                lambda request_id: ("eval", f"code={code_for(request_id)}"),
+                timeout,
+                idempotent,
+                tracked=True,
+            )
         ).strip()
         if not output.startswith("=> "):
             raise ObsidianCLIError(f"Unexpected output from obsidian eval: {_cap(output)}")
@@ -457,7 +658,7 @@ class ObsidianCLI:
         envelope: dict[str, Any] | None = None
         if key in self._installed:
             envelope = await self._send(
-                f"window.__brain?.fns['{key}'] ? window.__brain.run('{key}', {encoded}) "
+                lambda rid: f"window.__brain?.fns['{key}'] ? window.__brain.run('{key}', {encoded}, '{rid}') "
                 f": '{_MISSING}'",
                 timeout,
                 idempotent,
@@ -467,9 +668,9 @@ class ObsidianCLI:
                 envelope = None
         if envelope is None:
             envelope = await self._send(
-                f"(() => {{\n{_RUNNER}\n"
+                lambda rid: f"(() => {{\n{_RUNNER}\n"
                 f"window.__brain.fns['{key}'] ??= async (input) => {{\n{body}\n}};\n"
-                f"return window.__brain.run('{key}', {encoded});\n}})()",
+                f"return window.__brain.run('{key}', {encoded}, '{rid}');\n}})()",
                 timeout,
                 idempotent,
             )

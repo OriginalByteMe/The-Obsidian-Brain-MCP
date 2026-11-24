@@ -77,13 +77,20 @@ def session_folder(live_vault_name: str):
     folder = f"_obsidian-brain-tests-{uuid.uuid4().hex[:8]}"
     yield folder
     code = f"const input = {folder!r}; {_DELETE_FOLDER_JS}"
-    subprocess.run(
-        [find_cli_binary(), f"vault={live_vault_name}", "eval", f"code={code}"],
-        stdin=subprocess.DEVNULL,
-        capture_output=True,
-        timeout=60,
-        check=False,
-    )
+    for _ in range(
+        3
+    ):  # a call Obsidian never answers must not fail the session: deleting twice is fine
+        try:
+            subprocess.run(
+                [find_cli_binary(), f"vault={live_vault_name}", "eval", f"code={code}"],
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                timeout=20,
+                check=False,
+            )
+            break
+        except subprocess.TimeoutExpired:
+            continue
 
 
 @pytest.fixture

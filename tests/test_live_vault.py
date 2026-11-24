@@ -9,10 +9,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import sys
 import time
 import unicodedata
 import uuid
 from datetime import date
+from pathlib import Path
 
 import pytest
 
@@ -24,7 +27,7 @@ from obsidian_brain.exceptions import (
     NoteNotFoundError,
     ObsidianCLIError,
 )
-from obsidian_brain.obsidian import ObsidianCLI
+from obsidian_brain.obsidian import ObsidianCLI, find_cli_binary
 from obsidian_brain.vault import Vault
 
 from .conftest import BINARY, LocalTrash, Sandbox, eventually, put
@@ -821,7 +824,9 @@ class TestReplaceBody:
 
 
 async def cli_backlinks(cli: ObsidianCLI, path: str) -> dict[str, int]:
-    output = (await cli.run("backlinks", f"path={path}", "counts", "format=json")).strip()
+    output = (
+        await cli.run("backlinks", f"path={path}", "counts", "format=json", idempotent=True)
+    ).strip()
     rows = json.loads(output) if output.startswith("[") else []  # "No backlinks found." otherwise
     return {row["file"]: int(row["count"]) for row in rows}
 
@@ -973,7 +978,7 @@ class TestAppendUnlessLinked:
 
 async def cli_tag_counts(cli: ObsidianCLI, path: str | None = None) -> dict[str, int]:
     args = ["tags", "counts", "format=json"] + ([f"path={path}"] if path else [])
-    output = (await cli.run(*args)).strip()
+    output = (await cli.run(*args, idempotent=True)).strip()
     rows = json.loads(output) if output.startswith("[") else []  # "No tags found." otherwise
     return {row["tag"].removeprefix("#"): int(row["count"]) for row in rows}
 
@@ -1245,6 +1250,19 @@ class TestSnapshot:
 # eval load
 # ---------------------------------------------------------------------------
 
+# One console.log reaches the call's own swap and every stale one, and each JSON-encodes its
+# arguments, which calls `toJSON`: the count minus the call's own is the number left behind.
+# It goes through `run` because the eval command puts the call's console output before `=> `.
+STALE_SWAPS = (
+    "(() => { let calls = 0; console.log({toJSON() { calls++; return 'probe'; }}); "
+    "return calls - 1; })()"
+)
+
+
+async def stale_swaps(cli: ObsidianCLI) -> int:
+    output = await cli.run("eval", f"code={STALE_SWAPS}", idempotent=True)
+    return int(next(line for line in output.splitlines() if line.startswith("=> "))[3:])
+
 
 class TestEvalLoad:
     """Obsidian's `eval` swaps console.log/warn/error for each call and then puts back what it
@@ -1252,30 +1270,181 @@ class TestEvalLoad:
     then on it keeps every console message of the window (each CLI command logs its whole argv)
     until the window reloads: a minimized window held 13-33 MB more per 1,075 calls that way."""
 
-    # One console.log reaches the call's own swap and every stale one, and each JSON-encodes its
-    # arguments, which calls `toJSON`: the count minus the call's own is the number left behind.
-    # It goes through `run` because the eval command puts the call's console output before `=> `.
-    STALE_SWAPS = (
-        "(() => { let calls = 0; console.log({toJSON() { calls++; return 'probe'; }}); "
-        "return calls - 1; })()"
-    )
     # Sleeps of different lengths: calls that overlap and end in another order than they began.
     SLEEP = "await new Promise((resolve) => setTimeout(resolve, input)); return null;"
 
-    async def stale_swaps(self, cli: ObsidianCLI) -> int:
-        output = await cli.run("eval", f"code={self.STALE_SWAPS}", idempotent=True)
-        return int(next(line for line in output.splitlines() if line.startswith("=> "))[3:])
-
     async def test_a_burst_of_calls_leaves_no_console_swap_behind(self, live_vault_name):
         cli = ObsidianCLI(vault=live_vault_name, timeout=20)  # the default bound, not the fixture's
-        before = await self.stale_swaps(cli)
+        before = await stale_swaps(cli)
         await asyncio.gather(*(cli.eval(self.SLEEP, i % 8 * 5) for i in range(40)))
-        assert await self.stale_swaps(cli) == before
+        assert await stale_swaps(cli) == before
 
     async def test_the_probe_counts_the_swap_that_overlapping_calls_leave(self, cli):
         """What the test above rules out is real: calls allowed to overlap do leave a swap."""
-        before = await self.stale_swaps(cli)
+        before = await stale_swaps(cli)
         first = asyncio.create_task(cli.eval(self.SLEEP, 300))
         await asyncio.sleep(0.1)  # the first call is inside Obsidian before the second begins
         await asyncio.gather(first, cli.eval(self.SLEEP, 600))
-        assert await self.stale_swaps(cli) == before + 1
+        assert await stale_swaps(cli) == before + 1
+
+
+# ---------------------------------------------------------------------------
+# replies Obsidian never sends
+# ---------------------------------------------------------------------------
+
+# A stand-in for the CLI that loses replies the way Obsidian does. Each call whose code contains TAG
+# (the calls of one test, not the questions about them) takes the next mode of the plan:
+#   pass  run the real CLI;
+#   drop  Obsidian runs the call, its reply is thrown away and the CLI never exits;
+#   lose  the call never reaches Obsidian and the CLI never exits;
+#   late  the call reaches Obsidian only after CALL_LATE_SECONDS, from a process the server cannot
+#         kill, while the CLI the server started never exits.
+_LOSSY_CLI = r"""#!{python}
+import json, os, subprocess, sys, time
+
+real, tag, plan_file, hung_file = {real!r}, {tag!r}, {plan!r}, {hung!r}
+args = sys.argv[1:]
+if tag not in next((a for a in args if a.startswith("code=")), ""):
+    os.execv(real, [real, *args])
+plan = json.load(open(plan_file))
+mode = plan["modes"][plan["next"]] if plan["next"] < len(plan["modes"]) else "pass"
+plan["next"] += 1
+json.dump(plan, open(plan_file, "w"))
+if mode == "pass":
+    os.execv(real, [real, *args])
+open(hung_file, "a").write(str(os.getpid()) + "\n")
+if mode == "drop":
+    subprocess.run([real, *args], stdin=subprocess.DEVNULL, capture_output=True)
+elif mode == "late":
+    subprocess.Popen(
+        ["/bin/sh", "-c", 'sleep "$0"; exec "$@"', "{late}", real, *args],
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+time.sleep(600)
+"""
+CALL_LATE_SECONDS = 2
+
+
+class TestLostReply:
+    """Obsidian sometimes runs an `eval` and never answers it, and the CLI waits for the reply
+    forever. The server asks the window what became of a call that has no reply after
+    `reply_grace`. These tests make the loss happen on purpose, against the real window."""
+
+    # Counts how often each key was run in the window: a call that ran twice shows as 2.
+    COUNT = (
+        "window.__lossy ??= {}; window.__lossy[input] = (window.__lossy[input] ?? 0) + 1; "
+        "return window.__lossy[input];"
+    )
+    RUNS = "return window.__lossy?.[input] ?? 0;"
+
+    @pytest.fixture
+    def lossy(self, live_vault_name: str, tmp_path: Path):
+        tag = f"lossy-{uuid.uuid4().hex}"
+        plan, hung = tmp_path / "plan.json", tmp_path / "hung.pids"
+        wrapper = tmp_path / "obsidian-lossy"
+        wrapper.write_text(
+            _LOSSY_CLI.format(
+                python=sys.executable,
+                real=find_cli_binary(),
+                tag=tag,
+                plan=str(plan),
+                hung=str(hung),
+                late=CALL_LATE_SECONDS,
+            )
+        )
+        wrapper.chmod(0o755)
+
+        class Lossy:
+            def __init__(self) -> None:
+                self.cli = ObsidianCLI(
+                    cli_path=str(wrapper), vault=live_vault_name, timeout=20, reply_grace=0.5
+                )
+
+            def key(self, name: str) -> str:
+                return f"{tag}:{name}"
+
+            def plan(self, *modes: str) -> None:
+                plan.write_text(json.dumps({"modes": list(modes), "next": 0}))
+
+            def hung(self) -> list[int]:
+                """The stand-in CLI processes that were left waiting for a reply."""
+                return [int(pid) for pid in hung.read_text().split()] if hung.exists() else []
+
+        return Lossy()
+
+    async def runs(self, cli: ObsidianCLI, key: str) -> int:
+        runs = await cli.eval(self.RUNS, key, idempotent=True)
+        assert isinstance(runs, int)
+        return runs
+
+    def assert_gone(self, pids: list[int]) -> None:
+        for pid in pids:  # killed and waited for: not even a zombie is left
+            with pytest.raises(ProcessLookupError):
+                os.kill(pid, 0)
+
+    async def test_a_reply_that_never_arrives_is_recovered_and_the_call_ran_once(self, lossy, cli):
+        lossy.plan("drop")  # the first call is the one that installs the snippet
+        started = time.monotonic()
+        # A write that must not be repeated: no `idempotent`.
+        assert await lossy.cli.eval(self.COUNT, lossy.key("a")) == 1
+        assert time.monotonic() - started < 10  # not the 20 s timeout
+        assert await self.runs(cli, lossy.key("a")) == 1
+        assert len(lossy.hung()) == 1
+        self.assert_gone(lossy.hung())
+
+    async def test_a_short_call_whose_reply_is_lost_is_recovered_too(self, lossy, cli):
+        lossy.plan("pass", "drop")
+        assert await lossy.cli.eval(self.COUNT, lossy.key("a")) == 1
+        assert await lossy.cli.eval(self.COUNT, lossy.key("b")) == 1  # the short form was lost
+        assert await self.runs(cli, lossy.key("b")) == 1 and len(lossy.hung()) == 1
+        self.assert_gone(lossy.hung())
+
+    async def test_a_request_that_never_arrived_is_sent_again(self, lossy, cli):
+        lossy.plan("lose")
+        assert await lossy.cli.eval(self.COUNT, lossy.key("a")) == 1
+        assert await self.runs(cli, lossy.key("a")) == 1  # the lost call never ran, its resend did
+        self.assert_gone(lossy.hung())
+
+    async def test_a_cancelled_request_never_starts_when_it_arrives_late(self, lossy, cli):
+        """The server cancelled the id and sent the call again; the original shows up in Obsidian
+        afterwards and must be refused, or a write would run twice."""
+        lossy.plan("late")
+        assert await lossy.cli.eval(self.COUNT, lossy.key("a")) == 1
+        await asyncio.sleep(CALL_LATE_SECONDS + 2)  # the late call has reached Obsidian by now
+        assert await self.runs(cli, lossy.key("a")) == 1
+        self.assert_gone(lossy.hung())
+
+    async def test_a_burst_with_lost_replies_leaves_no_console_swap_behind(self, lossy, cli):
+        """A question about a call that already ran, or never arrived, overlaps nothing."""
+        before = await stale_swaps(cli)
+        # A call sent again takes the next mode too: the cycle makes six calls lose their reply.
+        lossy.plan(*["drop", "pass", "lose", "pass"] * 3)
+        started = time.monotonic()
+        for i in range(12):
+            assert await lossy.cli.eval(self.COUNT, lossy.key(str(i))) == 1
+        assert time.monotonic() - started < 40  # six recoveries of a second or two, not 20 s each
+        for i in range(12):
+            assert await self.runs(cli, lossy.key(str(i))) == 1
+        assert len(lossy.hung()) == 6
+        self.assert_gone(lossy.hung())
+        assert await stale_swaps(cli) == before
+
+    async def test_a_slow_call_is_waited_for_not_sent_again_and_leaves_no_swap(self, lossy, cli):
+        """The questions about a call that is still running overlap it, and end before it does."""
+        before = await stale_swaps(cli)
+        # Not through the stand-in CLI, which loses nothing here: the call just takes 2.5 s.
+        slow = ObsidianCLI(vault=lossy.cli.vault, timeout=20, reply_grace=0.5)
+        asked: list[str] = []
+        ask = slow._ask
+
+        async def counting(request_id: str, timeout: float):
+            asked.append(request_id)
+            return await ask(request_id, timeout)
+
+        slow._ask = counting  # type: ignore[method-assign]  # to see that the window was asked
+        body = f"await new Promise((resolve) => setTimeout(resolve, 2500)); {self.COUNT}"
+        assert await slow.eval(body, lossy.key("slow")) == 1
+        assert len(asked) >= 3 and len(set(asked)) == 1  # asked again while it ran, one id
+        assert await self.runs(cli, lossy.key("slow")) == 1  # and run once
+        assert await stale_swaps(cli) == before

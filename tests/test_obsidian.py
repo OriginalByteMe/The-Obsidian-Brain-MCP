@@ -2,7 +2,9 @@
 
 A tiny executable stands in for the Obsidian CLI. Its behaviour comes from FAKE_* env
 vars and every call's argv is appended to a JSON-lines file, so each test asserts on the
-real process boundary instead of mocks.
+real process boundary instead of mocks. It also plays the window: it keeps a log of the
+requests it was sent (what the runner's `window.__brainReqs` is in Obsidian) and answers
+questions about them, so lost replies can be scripted.
 """
 
 from __future__ import annotations
@@ -10,7 +12,9 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import sys
+import time
 import unicodedata
 from pathlib import Path
 from typing import Any
@@ -35,36 +39,102 @@ from obsidian_brain.exceptions import (
 from obsidian_brain.obsidian import MAX_PAYLOAD_BYTES, ObsidianCLI, find_cli_binary
 from obsidian_brain.vault import Vault, _snippet, get_vault
 
-FAKE_CLI = f"""#!{sys.executable}
-import json, os, sys, time
+_FAKE_CLI_BODY = r"""
+import fcntl, json, os, re, sys, time
 
-with open(os.environ["FAKE_CALLS"], "a", encoding="utf-8") as f:
-    f.write(json.dumps(sys.argv[1:]) + "\\n")
+calls = os.environ["FAKE_CALLS"]
+with open(calls, "a", encoding="utf-8") as f:
+    f.write(json.dumps(sys.argv[1:]) + "\n")
 if os.environ.get("FAKE_PIDFILE"):
     with open(os.environ["FAKE_PIDFILE"], "w") as f:
         f.write(str(os.getpid()))
-# FAKE_FIRST_STDOUT / FAKE_FIRST_SLEEP apply to the first call only (counted in a file, replaced
-# atomically so that processes running at the same time never read it half written).
-counter = os.environ["FAKE_CALLS"] + ".count"
-n = int(open(counter).read()) + 1 if os.path.exists(counter) else 1
-open(f"{{counter}}.{{os.getpid()}}", "w").write(str(n))
-os.replace(f"{{counter}}.{{os.getpid()}}", counter)
+with open(calls + ".pids", "a") as f:
+    f.write(str(os.getpid()) + "\n")
+
+
+def bump(name):
+    # A counter in a file, replaced atomically so that processes running at the same time
+    # never read it half written.
+    path = calls + "." + name
+    n = int(open(path).read()) + 1 if os.path.exists(path) else 1
+    open(f"{path}.{os.getpid()}", "w").write(str(n))
+    os.replace(f"{path}.{os.getpid()}", path)
+    return n
+
+
+def window(update):
+    # The window's log of requests ({id: {state, answer}}); changed under a lock.
+    with open(calls + ".lock", "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        path = calls + ".window"
+        log = json.load(open(path)) if os.path.exists(path) else {}
+        result = update(log)
+        json.dump(log, open(path, "w"))
+        return result
+
+
+def hang():
+    time.sleep(60)
+    raise SystemExit(0)
+
+
+# FAKE_FIRST_STDOUT / FAKE_FIRST_SLEEP apply to the first call only.
+n = bump("count")
+code = next((a[5:] for a in sys.argv[1:] if a.startswith("code=")), "")
+
+asked = re.search(r"reqs\.get\('([0-9a-f]{16})'\)", code)
+if asked:  # a question about a request: unknown ids are cancelled by being asked about
+    began = time.time()
+    entry = window(lambda log: dict(log.setdefault(asked.group(1), {"state": "cancelled", "answer": None})))
+    answer = json.dumps({"state": entry["state"], "answer": entry["answer"]})
+    time.sleep(float(os.environ.get("FAKE_QUESTION_SLEEP", "0")))
+    with open(calls + ".question-spans", "a") as f:
+        f.write(json.dumps([began, time.time()]) + "\n")
+    if os.environ.get("FAKE_LOSE_FIRST_QUESTION") and bump("questions") == 1:
+        hang()  # answered inside the window, but the reply never arrives
+    sys.stdout.write("=> " + answer)
+    raise SystemExit(0)
+
+sent = re.findall(r"window\.__brain\.run\('[0-9a-f]{16}', .*, '([0-9a-f]{16})'\)", code, re.S)
+request = sent[-1] if sent else None
+lose = os.environ.get("FAKE_LOSE_FIRST") if n == 1 else None
+if lose == "arrive":
+    hang()  # never reaches the window
+if request:
+
+    def start(log):
+        if request in log:
+            return False
+        log[request] = {"state": "running", "answer": None}
+        return True
+
+    if not window(start):  # a cancelled id never starts
+        sys.stdout.write('=> {"ok":false,"cancelled":true}')
+        raise SystemExit(0)
+    with open(calls + ".ran", "a") as f:
+        f.write(request + "\n")
 first_sleep = os.environ.get("FAKE_FIRST_SLEEP") if n == 1 else None
 started = time.time()
 time.sleep(float(first_sleep or os.environ.get("FAKE_SLEEP", "0")))
 if os.environ.get("FAKE_SPANS"):  # when this process ran: the span overlap tests read it back
     with open(os.environ["FAKE_SPANS"], "a", encoding="utf-8") as f:
-        f.write(json.dumps([started, time.time()]) + "\\n")
+        f.write(json.dumps([started, time.time()]) + "\n")
 stdout = os.environ.get("FAKE_FIRST_STDOUT") if n == 1 else None
 if stdout is None:
     stdout = os.environ.get("FAKE_STDOUT", "")
 if os.environ.get("FAKE_REPORT_STDIN"):
     devnull = os.path.samestat(os.fstat(0), os.stat(os.devnull))
-    stdout = "=> " + json.dumps({{"ok": True, "value": devnull}})
+    stdout = "=> " + json.dumps({"ok": True, "value": devnull})
+if request:
+    kept = stdout[3:] if stdout.startswith("=> ") and not os.environ.get("FAKE_DROP_ANSWER") else None
+    window(lambda log: log.update({request: {"state": "done", "answer": kept}}))
+if lose == "reply":
+    hang()  # it ran, but the reply never arrives
 sys.stdout.write(stdout)
 sys.stderr.write(os.environ.get("FAKE_STDERR", ""))
 raise SystemExit(int(os.environ.get("FAKE_EXIT", "0")))
 """
+FAKE_CLI = f"#!{sys.executable}\n{_FAKE_CLI_BODY}"
 
 
 @pytest.fixture
@@ -91,8 +161,8 @@ def fake(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
                 monkeypatch.setenv(f"FAKE_{name.upper()}", value)
 
         def reset(self) -> None:
-            for suffix in ("", ".count"):
-                Path(str(calls) + suffix).unlink(missing_ok=True)
+            for leftover in calls.parent.glob(calls.name + "*"):
+                leftover.unlink()
 
         def calls(self) -> list[list[str]]:
             return (
@@ -101,11 +171,37 @@ def fake(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
                 else []
             )
 
-        def max_overlap(self) -> int:
+        def requests(self) -> list[list[str]]:
+            """The calls that carry a request (not a question about one)."""
+            return [argv for argv in self.calls() if not _ASKED.search(argv[-1])]
+
+        def questions(self) -> list[list[str]]:
+            """The calls that ask the window what became of a request."""
+            return [argv for argv in self.calls() if _ASKED.search(argv[-1])]
+
+        def ran(self) -> list[str]:
+            """The ids of the requests the fake window actually ran, in order."""
+            ran = Path(str(calls) + ".ran")
+            return ran.read_text().split() if ran.exists() else []
+
+        def window(self) -> dict[str, dict[str, Any]]:
+            """What the fake window remembers of each request id."""
+            path = Path(str(calls) + ".window")
+            parsed: dict[str, dict[str, Any]] = json.loads(path.read_text())
+            return parsed
+
+        def assert_all_reaped(self) -> None:
+            """Every fake CLI process that was ever started has been killed and waited for."""
+            pids = Path(str(calls) + ".pids").read_text().split()
+            assert pids
+            for pid in pids:
+                assert_reaped(int(pid))
+
+        def max_overlap(self, spans_file: Path = spans) -> int:
             """The most fake CLI processes that were running at the same moment."""
             edges = sorted(
                 (t, kind)
-                for span in (json.loads(line) for line in spans.read_text().splitlines())
+                for span in (json.loads(line) for line in spans_file.read_text().splitlines())
                 for t, kind in ((span[0], 1), (span[1], -1))
             )
             running = peak = 0
@@ -642,6 +738,126 @@ class TestEvalsRunOneAtATime:
         cli = fake.cli(timeout=1.5)
         await asyncio.gather(cli.eval("return 'A';", idempotent=True), cli.eval("return 'B';"))
         assert ["'A'" in argv[2] for argv in fake.calls()] == [True, True, False]
+
+
+_ASKED = re.compile(r"reqs\.get\('([0-9a-f]{16})'\)")  # the question the server asks (_ASK)
+
+
+def request_id_of(argv: list[str]) -> str:
+    """The request id a call carries: its own, or the one a question asks about."""
+    asked = _ASKED.search(argv[2])
+    return asked.group(1) if asked else re.findall(r"'([0-9a-f]{16})'\)", argv[2])[-1]
+
+
+class TestLostReplies:
+    """Obsidian runs some `eval` calls and never answers them; the CLI waits forever. Every call
+    carries a request id and the window keeps what became of it, so a call with no reply after
+    `reply_grace` asks the window instead of waiting out the timeout. Finished: the stored answer
+    is used. Running: waited for. Never ran: marked cancelled in the window and sent again."""
+
+    def cli(self, fake, **kwargs) -> ObsidianCLI:
+        return fake.cli(timeout=8, reply_grace=0.3, **kwargs)
+
+    async def test_a_reply_that_never_arrives_is_recovered_without_running_the_call_again(
+        self, fake
+    ):
+        fake.script(lose_first="reply", stdout=_envelope(ok=True, value="appended"))
+        started = time.monotonic()
+        # Not idempotent: it must not be repeated, and it is not needed.
+        assert await self.cli(fake).eval("return 1;", {"n": 1}) == "appended"
+        assert time.monotonic() - started < 4  # not the timeout
+        (request,) = fake.requests()
+        (question,) = fake.questions()
+        assert fake.ran() == [request_id_of(request)] and request_id_of(question) == fake.ran()[0]
+        fake.assert_all_reaped()  # the hung CLI child was killed and waited for
+
+    async def test_a_request_that_never_arrived_is_sent_again_exactly_once(self, fake):
+        fake.script(lose_first="arrive", stdout=_envelope(ok=True, value="sent again"))
+        assert await self.cli(fake).eval("return 1;", {"n": 1}) == "sent again"
+        first, second = fake.requests()
+        assert request_id_of(first) != request_id_of(second)
+        assert fake.ran() == [request_id_of(second)]  # the lost one never ran
+        assert fake.window()[request_id_of(first)]["state"] == "cancelled"  # and now never will
+        assert len(fake.questions()) == 1
+        assert payload_of(first) == payload_of(second) == {"n": 1}
+        fake.assert_all_reaped()
+
+    async def test_a_slow_call_that_is_still_running_is_not_sent_again(self, fake):
+        fake.script(first_sleep="1.5", stdout=_envelope(ok=True, value="slow"))
+        started = time.monotonic()
+        assert await self.cli(fake).eval("return 1;") == "slow"
+        assert time.monotonic() - started >= 1.5
+        assert len(fake.requests()) == 1 and len(fake.ran()) == 1
+        assert len(fake.questions()) >= 2  # asked again every grace period while it ran
+        assert {request_id_of(question) for question in fake.questions()} == set(fake.ran())
+
+    async def test_a_call_that_is_answered_in_time_is_never_asked_about(self, fake):
+        fake.script(sleep="0.1", stdout=_envelope(ok=True, value=1))
+        assert await fake.cli(timeout=8, reply_grace=1).eval("return 1;") == 1
+        assert fake.questions() == []
+
+    async def test_every_call_carries_a_fresh_id(self, fake):
+        fake.script(stdout=_envelope(ok=True, value=1))
+        cli = self.cli(fake)
+        for _ in range(3):  # the first call installs the snippet, the others are short
+            await cli.eval("return 1;")
+        assert len({request_id_of(argv) for argv in fake.requests()}) == 3
+
+    async def test_a_question_whose_reply_is_lost_too_is_asked_again(self, fake):
+        fake.script(
+            lose_first="reply", lose_first_question="1", stdout=_envelope(ok=True, value="ok")
+        )
+        assert await self.cli(fake).eval("return 1;") == "ok"
+        assert len(fake.questions()) == 2 and len(fake.ran()) == 1
+        fake.assert_all_reaped()
+
+    async def test_a_lost_reply_does_not_stall_the_calls_queued_behind_it(self, fake):
+        fake.script(lose_first="reply", stdout=_envelope(ok=True, value=1))
+        cli = self.cli(fake)
+        started = time.monotonic()
+        assert await asyncio.gather(*(cli.eval("return 1;") for _ in range(3))) == [1, 1, 1]
+        assert time.monotonic() - started < 4  # the queue was not held for the timeout
+        assert len(fake.ran()) == 3
+
+    async def test_an_answer_too_large_to_keep_is_not_run_again_unless_the_call_is_idempotent(
+        self, fake
+    ):
+        fake.script(lose_first="reply", drop_answer="1", stdout=_envelope(ok=True, value="big"))
+        with pytest.raises(CLITimeoutError, match="check the vault before repeating a write"):
+            await self.cli(fake).eval("return 1;")
+        assert len(fake.ran()) == 1
+        fake.reset()
+        fake.script(lose_first="reply", drop_answer="1", stdout=_envelope(ok=True, value="big"))
+        assert await self.cli(fake).eval("return 1;", idempotent=True) == "big"
+        assert len(fake.ran()) == 2  # the retry of an idempotent call
+
+    async def test_a_call_the_window_never_finishes_times_out_and_leaves_no_child(self, fake):
+        fake.script(first_sleep="60")
+        cli = fake.cli(timeout=1.5, reply_grace=0.3)
+        with pytest.raises(CLITimeoutError, match="timed out after 1.5s"):
+            await cli.eval("return 1;")
+        assert len(fake.requests()) == 1  # still running: never sent again
+        assert len(fake.questions()) >= 2
+        fake.assert_all_reaped()
+
+    async def test_a_window_that_answers_nothing_times_out_at_the_deadline(self, fake):
+        fake.script(sleep="60", question_sleep="60")
+        cli = fake.cli(timeout=1.5, reply_grace=0.3)
+        started = time.monotonic()
+        with pytest.raises(CLITimeoutError):
+            await cli.eval("return 1;")
+        assert time.monotonic() - started < 4
+        assert len(fake.requests()) == 1 and len(fake.questions()) >= 2  # each asked again
+        fake.assert_all_reaped()  # the request's child and every question's
+
+    async def test_questions_are_asked_one_at_a_time(self, fake):
+        """Two calls waiting in different slots do not ask together: the questions could end out
+        of order, which is what leaves a console swap behind."""
+        fake.script(sleep="1.2", question_sleep="0.25", stdout=_envelope(ok=True, value=1))
+        cli = self.cli(fake, max_evals=2)
+        await asyncio.gather(cli.eval("return 1;"), cli.eval("return 2;"))
+        assert len(fake.questions()) >= 4  # both calls asked more than once
+        assert fake.max_overlap(Path(os.environ["FAKE_CALLS"] + ".question-spans")) == 1
 
 
 class TestErrorsNeverContainThePayload:

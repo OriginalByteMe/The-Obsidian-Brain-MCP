@@ -427,8 +427,9 @@ class Vault:
     async def _eval(
         self, body: str, payload: object = None, *, uses: str = "", idempotent: bool = False
     ) -> Any:
-        """Run a body in Obsidian. Only `idempotent` bodies are retried when Obsidian drops the
-        reply to a command it already executed (see ObsidianCLI._attempt)."""
+        """Run a body in Obsidian. A reply Obsidian never sends is recovered by the transport for
+        every body; only `idempotent` ones are repeated when a call still times out (see
+        ObsidianCLI._attempt)."""
         return await self.cli.eval(_JS_COMMON + uses + body, payload, idempotent=idempotent)
 
     async def _read(self, body: str, payload: object = None, *, uses: str = "") -> Any:
