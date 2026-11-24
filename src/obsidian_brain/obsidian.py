@@ -2,9 +2,10 @@
 
 Every vault operation is a snippet of JavaScript run inside Obsidian through
 `obsidian eval`, so it uses the plugin API (`app.vault`, `app.metadataCache`, ...)
-rather than the CLI's text commands. `ObsidianCLI.eval` wraps the snippet in a
-fixed envelope: the payload goes in as one JSON literal, the result comes back as
-one JSON line, and a thrown error carries a `code` that maps to a typed exception.
+rather than the CLI's text commands. `ObsidianCLI.eval` sends each snippet to a window once,
+installs it there as a function, and calls it afterwards with a short command: the payload goes
+in as one JSON literal, the result comes back as one JSON line, and a thrown error carries a
+`code` that maps to a typed exception. Evals run one at a time (see `MAX_EVALS_IN_FLIGHT`).
 
 Every subprocess runs with list-form argv (never a shell), stdin closed, and an
 explicit timeout; a timed-out or cancelled call kills and reaps its child.
@@ -13,6 +14,8 @@ explicit timeout; a timed-out or cancelled call kills and reaps its child.
 import asyncio
 import contextlib
 import errno
+import functools
+import hashlib
 import json
 import os
 import re
@@ -86,8 +89,21 @@ _CLI_NOT_RUNNING_RE = re.compile(r"^The CLI is unable to find Obsidian\b.*$")
 
 # Largest JSON payload one call carries. The whole `code=` argv entry must fit the
 # OS argument limit (~1,040,000 bytes on macOS, with the environment counting too);
-# the fixed JS around the payload adds a few KB, so this keeps a safe margin.
+# the code around the payload (a call, or a snippet to install) adds at most a few tens of KB,
+# so this keeps a safe margin.
 MAX_PAYLOAD_BYTES = 900_000
+
+# How many `obsidian eval` calls one ObsidianCLI keeps in flight. Obsidian's eval command swaps
+# `console.log`/`warn`/`error` for the length of each call and then puts back what it found.
+# When two calls overlap and the first one ends first, the second puts back the first one's
+# swap, which then stays installed for good: every later console message of the window (each CLI
+# command logs its whole argv) is kept in that swap's buffer until the window reloads, and each
+# overlap that ends out of order adds one more swap. A minimized window overlaps the most calls:
+# 1,075 calls through the server left 13-33 MB behind (4-9 swaps) when each call carried the whole
+# helper code and up to 150 ran at once, 4-7 MB (6-15 swaps) with short calls two or four at a
+# time, and about 2 MB (no swap) one at a time. Other processes sending evals to the same vault
+# can still overlap with ours.
+MAX_EVALS_IN_FLIGHT = 1
 
 # Pause before the one retry of a cold-start "command not found" (see ObsidianCLI.run).
 _COLD_START_RETRY_DELAY = 0.75
@@ -106,19 +122,40 @@ _EVAL_ERRORS: dict[str, type[ObsidianError]] = {
     "INVALID": InvalidArgumentError,
 }
 
-# `await run()` rather than `await (async () => {...})()`: `eval` first tries the code
-# as a plain script and only falls back to an async function body when that fails with
-# an await error, and `await (...)` parses as a plain call to a function named `await`.
-# An error message never carries the vault's absolute path (Node's OS errors do: ENAMETOOLONG,
-# EACCES, ...): it is cut out, which leaves the vault-relative path.
-_EVAL_TEMPLATE = (
-    "const run = async () => {\n%s\n}; "
-    "try { const value = await run(); "
-    "return JSON.stringify({ok: true, value: value ?? null}); } "
-    "catch (e) { const base = app.vault?.adapter?.basePath; let message = String(e?.message ?? e); "
-    "if (base) message = message.split(base + '/').join('').split(base).join(''); "
-    "return JSON.stringify({ok: false, error: {code: e?.code ?? null, message}}); }"
-)
+# What `eval` installs in a window, once, under `window.__brain`: `run(key, input)` calls the
+# function stored under `key` and returns the answer as one JSON string. A new text of this
+# runner changes `rev`, so a window that holds an older one gets it replaced (and the functions
+# installed with it dropped). An error message never carries the vault's absolute path (Node's
+# OS errors do: ENAMETOOLONG, EACCES, ...): it is cut out, which leaves the vault-relative path.
+_RUNNER = """\
+if (window.__brain?.rev !== '@REV@') {
+  window.__brain = {
+    rev: '@REV@',
+    fns: {},
+    async run(key, input) {
+      try {
+        return JSON.stringify({ok: true, value: (await this.fns[key](input)) ?? null});
+      } catch (e) {
+        const base = app.vault?.adapter?.basePath;
+        let message = String(e?.message ?? e);
+        if (base) message = message.split(base + '/').join('').split(base).join('');
+        return JSON.stringify({ok: false, error: {code: e?.code ?? null, message}});
+      }
+    },
+  };
+}"""
+_RUNNER_REV = hashlib.sha256(_RUNNER.encode()).hexdigest()[:12]
+_RUNNER = _RUNNER.replace("@REV@", _RUNNER_REV)
+
+# The answer of a call to a function the window does not hold (never installed, window reloaded,
+# or another server version replaced the runner).
+_MISSING = '{"ok":false,"missing":true}'
+
+
+@functools.cache
+def _function_key(body: str) -> str:
+    """The name a body is installed under: it changes with the body and with the runner."""
+    return hashlib.sha256(f"{_RUNNER_REV}\n{body}".encode()).hexdigest()[:16]
 
 
 def _cap(text: str) -> str:
@@ -223,6 +260,8 @@ class ObsidianCLI:
         cli_path: Optional binary path. Discovery is deferred until the first command.
         vault: Optional vault name. Defaults to OBSIDIAN_VAULT when unset.
         timeout: Default timeout in seconds for one CLI call.
+        max_evals: How many `eval` calls may run at once (see MAX_EVALS_IN_FLIGHT); the others
+            wait their turn, and the wait does not count against `timeout`.
     """
 
     def __init__(
@@ -230,10 +269,15 @@ class ObsidianCLI:
         cli_path: str | None = None,
         vault: str | None = None,
         timeout: float = 20.0,
+        max_evals: int = MAX_EVALS_IN_FLIGHT,
     ):
         self.cli_path = cli_path
         self.vault = vault if vault is not None else os.environ.get("OBSIDIAN_VAULT")
         self.timeout = timeout
+        self._eval_slots = asyncio.Semaphore(max_evals)
+        # The snippets this window is believed to hold, so a repeat call can skip sending them.
+        # Only a hint: a reloaded window answers `_MISSING` and gets the snippet again.
+        self._installed: set[str] = set()
 
     async def _run_once(self, cmd: list[str], command: str, timeout: float) -> str:
         """Launch one CLI subprocess, wait for it, and return its stdout.
@@ -291,13 +335,16 @@ class ObsidianCLI:
         Obsidian occasionally executes a CLI command but never answers it (about 1 call in
         800 under load, measured: the command's effect is visible, the CLI waits forever).
         Repeating a read or an idempotent edit is harmless; anything else must not be repeated.
+        An `eval` holds its slot through the repeat: nothing else runs in the window before it.
         """
-        try:
-            return await self._run_once(cmd, command, timeout)
-        except CLITimeoutError:
-            if not idempotent:
-                raise
-            return await self._run_once(cmd, command, timeout)
+        slot = self._eval_slots if command == "eval" else contextlib.nullcontext()
+        async with slot:
+            try:
+                return await self._run_once(cmd, command, timeout)
+            except CLITimeoutError:
+                if not idempotent:
+                    raise
+                return await self._run_once(cmd, command, timeout)
 
     async def run(self, *args: str, timeout: float | None = None, idempotent: bool = False) -> str:
         """Execute a CLI command and return stdout.
@@ -352,6 +399,22 @@ class ObsidianCLI:
             raise error
         return output
 
+    async def _send(self, code: str, timeout: float | None, idempotent: bool) -> dict[str, Any]:
+        """Run one `eval` and parse its output into the envelope `{ok, value | error}`."""
+        output = (
+            await self.run("eval", f"code={code}", timeout=timeout, idempotent=idempotent)
+        ).strip()
+        if not output.startswith("=> "):
+            raise ObsidianCLIError(f"Unexpected output from obsidian eval: {_cap(output)}")
+        try:
+            envelope: dict[str, Any] = json.loads(output[3:])
+            envelope["ok"]  # KeyError or TypeError when the JSON is not an envelope
+        except (ValueError, KeyError, TypeError):
+            raise ObsidianCLIError(
+                f"Unreadable result from obsidian eval: {_cap(output)}"
+            ) from None
+        return envelope
+
     async def eval(
         self,
         body: str,
@@ -366,6 +429,10 @@ class ObsidianCLI:
         with a `code` of NOT_FOUND, EXISTS, HEADING_NOT_FOUND or INVALID to raise
         the matching exception; any other thrown error raises ObsidianCLIError. Pass
         `idempotent=True` only when running the body twice leaves the same result.
+
+        The body is installed in the window as a function the first time it is sent and stays
+        there, so every later call carries only the payload. That makes the body a constant: one
+        built from data would install a new function for every value. Data goes in the payload.
 
         Raises:
             ContentTooLargeError: The encoded payload exceeds MAX_PAYLOAD_BYTES.
@@ -384,20 +451,30 @@ class ObsidianCLI:
                 f"{MAX_PAYLOAD_BYTES // 1000} KB. Split it across several calls or notes."
             )
 
-        code = f"const input = {encoded}; " + _EVAL_TEMPLATE % body
-        output = (
-            await self.run("eval", f"code={code}", timeout=timeout, idempotent=idempotent)
-        ).strip()
-        if not output.startswith("=> "):
-            raise ObsidianCLIError(f"Unexpected output from obsidian eval: {_cap(output)}")
-        try:
-            envelope = json.loads(output[3:])
-            ok = envelope["ok"]
-        except (ValueError, KeyError, TypeError):
-            raise ObsidianCLIError(
-                f"Unreadable result from obsidian eval: {_cap(output)}"
-            ) from None
-        if ok:
+        # Both call forms are a single expression: `eval` evaluates a plain statement list as a
+        # script, where a top-level `return` is a syntax error.
+        key = _function_key(body)
+        envelope: dict[str, Any] | None = None
+        if key in self._installed:
+            envelope = await self._send(
+                f"window.__brain?.fns['{key}'] ? window.__brain.run('{key}', {encoded}) "
+                f": '{_MISSING}'",
+                timeout,
+                idempotent,
+            )
+            if envelope.get("missing") is True:  # the window was reloaded or got another runner
+                self._installed.discard(key)
+                envelope = None
+        if envelope is None:
+            envelope = await self._send(
+                f"(() => {{\n{_RUNNER}\n"
+                f"window.__brain.fns['{key}'] ??= async (input) => {{\n{body}\n}};\n"
+                f"return window.__brain.run('{key}', {encoded});\n}})()",
+                timeout,
+                idempotent,
+            )
+            self._installed.add(key)
+        if envelope["ok"]:
             return envelope.get("value")
         error = envelope.get("error") or {}
         message = str(error.get("message") or "unknown error")

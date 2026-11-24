@@ -43,12 +43,18 @@ with open(os.environ["FAKE_CALLS"], "a", encoding="utf-8") as f:
 if os.environ.get("FAKE_PIDFILE"):
     with open(os.environ["FAKE_PIDFILE"], "w") as f:
         f.write(str(os.getpid()))
-# FAKE_FIRST_STDOUT / FAKE_FIRST_SLEEP apply to the first call only (counted in a file).
+# FAKE_FIRST_STDOUT / FAKE_FIRST_SLEEP apply to the first call only (counted in a file, replaced
+# atomically so that processes running at the same time never read it half written).
 counter = os.environ["FAKE_CALLS"] + ".count"
 n = int(open(counter).read()) + 1 if os.path.exists(counter) else 1
-open(counter, "w").write(str(n))
+open(f"{{counter}}.{{os.getpid()}}", "w").write(str(n))
+os.replace(f"{{counter}}.{{os.getpid()}}", counter)
 first_sleep = os.environ.get("FAKE_FIRST_SLEEP") if n == 1 else None
+started = time.time()
 time.sleep(float(first_sleep or os.environ.get("FAKE_SLEEP", "0")))
+if os.environ.get("FAKE_SPANS"):  # when this process ran: the span overlap tests read it back
+    with open(os.environ["FAKE_SPANS"], "a", encoding="utf-8") as f:
+        f.write(json.dumps([started, time.time()]) + "\\n")
 stdout = os.environ.get("FAKE_FIRST_STDOUT") if n == 1 else None
 if stdout is None:
     stdout = os.environ.get("FAKE_STDOUT", "")
@@ -71,7 +77,9 @@ def fake(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     for name in list(os.environ):
         if name.startswith("FAKE_") or name in {"OBSIDIAN_VAULT", "OBSIDIAN_CLI_PATH"}:
             monkeypatch.delenv(name)
+    spans = tmp_path / "spans.jsonl"
     monkeypatch.setenv("FAKE_CALLS", str(calls))
+    monkeypatch.setenv("FAKE_SPANS", str(spans))
     monkeypatch.setattr(obsidian, "_COLD_START_RETRY_DELAY", 0)
 
     class Fake:
@@ -92,6 +100,19 @@ def fake(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
                 if calls.exists()
                 else []
             )
+
+        def max_overlap(self) -> int:
+            """The most fake CLI processes that were running at the same moment."""
+            edges = sorted(
+                (t, kind)
+                for span in (json.loads(line) for line in spans.read_text().splitlines())
+                for t, kind in ((span[0], 1), (span[1], -1))
+            )
+            running = peak = 0
+            for _, kind in edges:
+                running += kind
+                peak = max(peak, running)
+            return peak
 
         def cli(self, **kwargs) -> ObsidianCLI:
             kwargs.setdefault("vault", "testvault")
@@ -434,6 +455,13 @@ def _envelope(**fields) -> str:
     return "=> " + json.dumps(fields)
 
 
+def payload_of(argv: list[str]) -> Any:
+    """The JSON payload inside one `eval` argv, whether it carries the snippet or only a call."""
+    code = argv[2].removeprefix("code=")
+    literal = code[code.index("window.__brain.run('") :].split("', ", 1)[1]
+    return json.JSONDecoder().raw_decode(literal)[0]
+
+
 class TestEval:
     async def test_returns_the_value(self, fake):
         fake.script(stdout=_envelope(ok=True, value={"a": [1, 2], "b": None}))
@@ -458,8 +486,8 @@ class TestEval:
         fake.script(stdout=_envelope(ok=True))
         assert await fake.cli().eval("return;") is None
 
-    async def test_code_argument_shape_and_payload_round_trip(self, fake):
-        """`const input = <json>` carries the payload verbatim; \\n, \\t, BOM and LaTeX survive."""
+    async def test_the_first_call_installs_the_snippet_and_carries_the_payload(self, fake):
+        """The payload is one JSON literal; \\n, \\t, BOM and LaTeX survive."""
         payload = {
             "text": 'a\\nb\\tc \\\\ $\\theta$ \r\n\ufeff日本語 😀 \u2028\u2029 \x00 "q" `t` ${x}',
             "n": 1,
@@ -468,11 +496,52 @@ class TestEval:
         await fake.cli().eval("return input.n;", payload)
         (argv,) = fake.calls()
         code = argv[2].removeprefix("code=")
-        assert code.startswith("const input = ")
-        assert "return input.n;" in code and "await run()" in code
-        literal = code.removeprefix("const input = ").split("; const run = ", 1)[0]
-        assert json.loads(literal) == payload
-        assert not set(literal) & {"\ufeff", "\u2028", "\u2029"}  # escaped, not raw
+        assert "fns['" in code and "??= async (input) => {\nreturn input.n;\n};" in code
+        assert payload_of(argv) == payload
+        assert not set(code) & {"\ufeff", "\u2028", "\u2029"}  # escaped, not raw
+        # One expression: `eval` runs a plain statement list as a script, where `return` is an error.
+        assert code.startswith("(() => {") and code.endswith("})()")
+
+    async def test_a_repeat_call_sends_only_the_payload(self, fake):
+        """Obsidian logs every command's whole argv: a call stays short once the snippet is in."""
+        fake.script(stdout=_envelope(ok=True, value=3))
+        cli = fake.cli()
+        body = "return input.n; // " + "padding " * 1000
+        assert await cli.eval(body, {"n": 3}) == 3
+        assert await cli.eval(body, {"n": 4}) == 3
+        first, second = fake.calls()
+        assert "padding" in first[2] and "padding" not in second[2]
+        assert len(second[2]) < 300
+        assert payload_of(second) == {"n": 4}
+        await cli.eval("return 2;")  # another snippet is a first call again
+        assert "async (input)" in fake.calls()[2][2]
+
+    async def test_a_repeat_call_reports_errors_like_the_first(self, fake):
+        cli = fake.cli()
+        fake.script(stdout=_envelope(ok=True, value=1))
+        await cli.eval("return 1;")
+        fake.script(stdout=_envelope(ok=False, error={"code": "NOT_FOUND", "message": "gone"}))
+        with pytest.raises(NoteNotFoundError, match="gone"):
+            await cli.eval("return 1;")
+        assert "async (input)" not in fake.calls()[1][2]  # it was the short call that failed
+
+    async def test_a_window_that_lost_the_snippet_gets_it_again(self, fake):
+        """A reloaded window (or one another server version took over) answers `missing`."""
+        cli = fake.cli()
+        fake.script(stdout=_envelope(ok=True, value="first"))
+        assert await cli.eval("return 1;", {"n": 1}) == "first"
+        fake.reset()
+        fake.script(
+            first_stdout=_envelope(ok=False, missing=True), stdout=_envelope(ok=True, value="again")
+        )
+        assert await cli.eval("return 1;", {"n": 2}) == "again"
+        short, full = fake.calls()
+        assert "async (input)" not in short[2] and "async (input)" in full[2]
+        assert payload_of(short) == payload_of(full) == {"n": 2}
+        fake.reset()
+        fake.script(stdout=_envelope(ok=True, value="third"))
+        assert await cli.eval("return 1;", {"n": 3}) == "third"
+        assert "async (input)" not in fake.calls()[0][2]  # installed again: short call
 
     @pytest.mark.parametrize(
         ("code", "exception"),
@@ -537,6 +606,44 @@ class TestEval:
         assert fake.calls() == []
 
 
+class TestEvalsRunOneAtATime:
+    """Obsidian's eval swaps console.log for each call and restores it out of order when calls
+    overlap, leaving a swap behind that keeps every later console message (see MAX_EVALS_IN_FLIGHT)."""
+
+    async def test_evals_wait_for_each_other(self, fake):
+        fake.script(sleep="0.2", stdout=_envelope(ok=True, value=1))
+        cli = fake.cli()
+        await asyncio.gather(*(cli.eval(f"return {i};") for i in range(4)))
+        assert len(fake.calls()) == 4 and fake.max_overlap() == 1
+
+    async def test_the_bound_is_a_setting(self, fake):
+        fake.script(sleep="0.3", stdout=_envelope(ok=True, value=1))
+        cli = fake.cli(max_evals=2)
+        await asyncio.gather(*(cli.eval(f"return {i};") for i in range(6)))
+        assert fake.max_overlap() == 2
+
+    async def test_waiting_for_a_turn_does_not_count_against_the_timeout(self, fake):
+        fake.script(sleep="1", stdout=_envelope(ok=True, value=1))
+        cli = fake.cli(timeout=1.5)  # the second call is answered 2 s after it was made
+        assert await asyncio.gather(cli.eval("return 1;"), cli.eval("return 2;")) == [1, 1]
+
+    async def test_commands_other_than_eval_do_not_wait_for_an_eval(self, fake):
+        fake.script(first_sleep="1.5", stdout="[1]")
+        cli = fake.cli()
+        slow = asyncio.create_task(cli.run("eval", "code=1"))
+        while not fake.calls():
+            await asyncio.sleep(0.02)
+        assert await cli.run("search:context", "query=x", "format=json") == "[1]"
+        assert not slow.done()
+        await slow
+
+    async def test_a_lost_reply_is_repeated_before_the_next_eval_runs(self, fake):
+        fake.script(first_sleep="60", stdout=_envelope(ok=True, value=1))
+        cli = fake.cli(timeout=1.5)
+        await asyncio.gather(cli.eval("return 'A';", idempotent=True), cli.eval("return 'B';"))
+        assert ["'A'" in argv[2] for argv in fake.calls()] == [True, True, False]
+
+
 class TestErrorsNeverContainThePayload:
     SECRET = "SECRET-NOTE-BODY-7f3a"
 
@@ -579,8 +686,7 @@ class TestErrorsNeverContainThePayload:
 def sent_input(fake: Any) -> dict[str, Any]:
     """The payload object of the one eval the fake CLI received."""
     (argv,) = fake.calls()
-    literal = argv[2].removeprefix("code=const input = ").split("; const run = ", 1)[0]
-    parsed: dict[str, Any] = json.loads(literal)
+    parsed: dict[str, Any] = payload_of(argv)
     return parsed
 
 

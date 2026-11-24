@@ -88,7 +88,9 @@ def session_folder(live_vault_name: str):
 
 @pytest.fixture
 def cli(live_vault_name: str) -> ObsidianCLI:
-    return ObsidianCLI(vault=live_vault_name, timeout=20)
+    # The concurrency tests need Obsidian itself to see several evals at once, which the default
+    # bound (one at a time, see MAX_EVALS_IN_FLIGHT) would hide: they run against a wide one.
+    return ObsidianCLI(vault=live_vault_name, timeout=20, max_evals=16)
 
 
 @pytest.fixture
@@ -163,6 +165,7 @@ class LocalTrash:
             return (await app.vault.adapter.exists(path)) ? await app.vault.adapter.read(path) : null;
             """,
             name,
+            idempotent=True,
         )  # type: ignore[no-any-return]
 
 
@@ -171,11 +174,11 @@ async def local_trash(cli: ObsidianCLI):
     """Send trashed files to the vault's `.trash/` folder, which a test can read.
 
     The disposable vaults are set to the macOS system trash, which a test cannot see. The option
-    is restored afterwards and every file the test trashed is removed from `.trash/`.
+    is restored afterwards and every file the test trashed is removed from `.trash/`. Every eval
+    here can be repeated, so a reply Obsidian never sent costs a retry, not the test.
     """
-    previous = await cli.eval(
-        "const o = app.vault.getConfig('trashOption'); app.vault.setConfig('trashOption', 'local'); return o;"
-    )
+    previous = await cli.eval("return app.vault.getConfig('trashOption');", idempotent=True)
+    await cli.eval("app.vault.setConfig('trashOption', 'local'); return null;", idempotent=True)
     trash = LocalTrash(cli)
     yield trash
     await cli.eval(
@@ -187,6 +190,7 @@ async def local_trash(cli: ObsidianCLI):
         return null;
         """,
         {"previous": previous, "names": trash.names},
+        idempotent=True,
     )
 
 

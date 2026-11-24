@@ -346,6 +346,8 @@ Failures are reported as MCP tool errors in plain words: Obsidian not running, C
 
 Timeouts: every call is bounded (20 s). A read, a search or an idempotent edit (`update_tags`, `write_note` with `overwrite=true`, `write_memory` on an existing memory) that times out is retried once, so the worst case is twice the timeout. Every other write (`append_to_note`, `append_to_daily`, `add_link`, `write_note` without `overwrite`, `delete_note`) is never retried, and its timeout error says the write may have happened: read the note before trying again. The `Received CLI command [...]` lines Obsidian echoes to stdout when several CLI calls run at once are stripped from the output.
 
+Load: the server sends one `eval` to Obsidian at a time and installs each snippet in the window once, so a later call carries only its payload. Calls made at once are queued, not refused, and the wait does not count against the 20 s. This matters because Obsidian's `eval` command leaves memory behind in the window when calls overlap (a minimized window shows it most; see [SPECIFICATION.md](SPECIFICATION.md#transport-obsidianpy)). Another tool that runs `obsidian eval` on the same vault at the same time can still overlap with the server's calls.
+
 ### Troubleshooting
 
 - `Obsidian's command line interface is disabled` — turn on **Command line interface** in Settings > General > Advanced.
@@ -470,6 +472,8 @@ uv run ruff check . && uv run ruff format --check . && uv run mypy src
 ```
 
 The server is built on `mcp.server.mcpserver.MCPServer` from the official MCP Python SDK, version 2.3 (`mcp>=2.3,<3`). Every vault operation is a snippet of JavaScript run inside Obsidian through `obsidian eval` (see [SPECIFICATION.md](SPECIFICATION.md) for the architecture).
+
+The live concurrency tests overlap `eval` calls on purpose, and every overlap that ends out of order leaves memory in the test vault's window (see SPECIFICATION.md, Testing). After many runs, close that window with `obsidian vault=<name> eval code="window.close()"`; the next CLI call reopens it with a fresh heap.
 
 ---
 

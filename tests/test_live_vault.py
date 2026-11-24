@@ -1239,3 +1239,43 @@ class TestSnapshot:
         whole = await vault.snapshot()
         assert sandbox.path("x.md") in {n.path for n in whole.notes}
         assert sandbox.dir in whole.folders
+
+
+# ---------------------------------------------------------------------------
+# eval load
+# ---------------------------------------------------------------------------
+
+
+class TestEvalLoad:
+    """Obsidian's `eval` swaps console.log/warn/error for each call and then puts back what it
+    found. Two calls that overlap and end out of order leave a swap installed for good, and from
+    then on it keeps every console message of the window (each CLI command logs its whole argv)
+    until the window reloads: a minimized window held 13-33 MB more per 1,075 calls that way."""
+
+    # One console.log reaches the call's own swap and every stale one, and each JSON-encodes its
+    # arguments, which calls `toJSON`: the count minus the call's own is the number left behind.
+    # It goes through `run` because the eval command puts the call's console output before `=> `.
+    STALE_SWAPS = (
+        "(() => { let calls = 0; console.log({toJSON() { calls++; return 'probe'; }}); "
+        "return calls - 1; })()"
+    )
+    # Sleeps of different lengths: calls that overlap and end in another order than they began.
+    SLEEP = "await new Promise((resolve) => setTimeout(resolve, input)); return null;"
+
+    async def stale_swaps(self, cli: ObsidianCLI) -> int:
+        output = await cli.run("eval", f"code={self.STALE_SWAPS}", idempotent=True)
+        return int(next(line for line in output.splitlines() if line.startswith("=> "))[3:])
+
+    async def test_a_burst_of_calls_leaves_no_console_swap_behind(self, live_vault_name):
+        cli = ObsidianCLI(vault=live_vault_name, timeout=20)  # the default bound, not the fixture's
+        before = await self.stale_swaps(cli)
+        await asyncio.gather(*(cli.eval(self.SLEEP, i % 8 * 5) for i in range(40)))
+        assert await self.stale_swaps(cli) == before
+
+    async def test_the_probe_counts_the_swap_that_overlapping_calls_leave(self, cli):
+        """What the test above rules out is real: calls allowed to overlap do leave a swap."""
+        before = await self.stale_swaps(cli)
+        first = asyncio.create_task(cli.eval(self.SLEEP, 300))
+        await asyncio.sleep(0.1)  # the first call is inside Obsidian before the second begins
+        await asyncio.gather(first, cli.eval(self.SLEEP, 600))
+        assert await self.stale_swaps(cli) == before + 1
