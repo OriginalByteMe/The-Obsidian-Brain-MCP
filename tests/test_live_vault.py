@@ -20,6 +20,7 @@ from pathlib import Path
 import pytest
 
 from obsidian_brain.exceptions import (
+    CLITimeoutError,
     ContentTooLargeError,
     HeadingNotFoundError,
     InvalidArgumentError,
@@ -1357,8 +1358,14 @@ class TestLostReply:
 
         class Lossy:
             def __init__(self) -> None:
-                self.cli = ObsidianCLI(
-                    cli_path=str(wrapper), vault=live_vault_name, timeout=20, reply_grace=0.5
+                self.cli = self.client(0.5)
+
+            def client(self, reply_grace: float) -> ObsidianCLI:
+                return ObsidianCLI(
+                    cli_path=str(wrapper),
+                    vault=live_vault_name,
+                    timeout=20,
+                    reply_grace=reply_grace,
                 )
 
             def key(self, name: str) -> str:
@@ -1413,6 +1420,27 @@ class TestLostReply:
         assert await lossy.cli.eval(self.COUNT, lossy.key("a")) == 1
         await asyncio.sleep(CALL_LATE_SECONDS + 2)  # the late call has reached Obsidian by now
         assert await self.runs(cli, lossy.key("a")) == 1
+        self.assert_gone(lossy.hung())
+
+    async def test_a_burst_from_another_client_cannot_make_a_finished_call_run_again(
+        self, lossy, cli, live_vault_name
+    ):
+        """Another server process on the window finishes more calls than the log keeps answers for,
+        while this client's reply is lost. Its call finished: the window must still know the id (an
+        id it has forgotten reads as never seen, and the write would be sent again and run twice).
+        The answer is gone, so the call fails loudly; the write ran once."""
+        lossy.plan("pass", "drop")
+        client = lossy.client(reply_grace=4)  # the other client's burst is over before it asks
+        assert await client.eval(self.COUNT, lossy.key("warm")) == 1  # installs the snippet
+        other = ObsidianCLI(vault=live_vault_name, timeout=20)
+
+        async def burst() -> None:
+            for i in range(260):  # more than the 128 answers the window keeps
+                await other.eval("return input;", i, idempotent=True)
+
+        with pytest.raises(CLITimeoutError, match="check the vault before repeating a write"):
+            await asyncio.gather(client.eval(self.COUNT, lossy.key("w")), burst())
+        assert await self.runs(cli, lossy.key("w")) == 1
         self.assert_gone(lossy.hung())
 
     async def test_a_burst_with_lost_replies_leaves_no_console_swap_behind(self, lossy, cli):

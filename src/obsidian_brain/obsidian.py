@@ -143,8 +143,13 @@ _EVAL_ERRORS: dict[str, type[ObsidianError]] = {
 # `window.__brainReqs` (it outlives a replaced runner) remembers every request id: `running`, or
 # `done` with the answer, so a call whose reply never reached the CLI can be asked for (_ASK). An
 # id that is already known never starts: that is what makes a cancelled id safe to send again
-# under a new one. The log is bounded: 128 entries, none older than 2 minutes once finished (a
-# call still running is never dropped), and an answer over 128 KB is not kept (`answer: null`).
+# under a new one. An id is never forgotten while a client can still ask about it: its entry
+# (`running`, or `done`) is dropped only by age, 2 minutes after it finished (a call still running
+# is never dropped; a client waits 20 s, twice with the idempotent retry, so 2 minutes is margin).
+# The answers are kept apart (`window.__brainAnswers`) and bounded by count: the last 128, and none
+# over 128 KB (UTF-8 bytes). An id whose answer was dropped still reads `done`, without an answer,
+# and the client then reports a timeout ("may have carried the command out") for a write, or
+# repeats an idempotent call. Entries are about 100 bytes: other clients' bursts cannot evict one.
 _RUNNER = """\
 if (window.__brain?.rev !== '@REV@') {
   window.__brain = {
@@ -163,11 +168,16 @@ if (window.__brain?.rev !== '@REV@') {
         if (base) message = message.split(base + '/').join('').split(base).join('');
         answer = JSON.stringify({ok: false, error: {code: e?.code ?? null, message}});
       }
-      reqs.set(id, {state: 'done', at: Date.now(), answer: answer.length <= 131072 ? answer : null});
+      const now = Date.now();
+      reqs.set(id, {state: 'done', at: now});
+      const answers = (window.__brainAnswers ??= new Map());
+      if (new TextEncoder().encode(answer).length <= 131072) answers.set(id, answer);
+      while (answers.size > 128) answers.delete(answers.keys().next().value);
       for (const [other, req] of reqs) {
         if (req.state === 'running') continue;
-        if (reqs.size <= 128 && Date.now() - req.at < 120000) break;
+        if (now - req.at < 120000) break;
         reqs.delete(other);
+        answers.delete(other);
       }
       return answer;
     },
@@ -177,16 +187,20 @@ _RUNNER_REV = hashlib.sha256(_RUNNER.encode()).hexdigest()[:12]
 _RUNNER = _RUNNER.replace("@REV@", _RUNNER_REV)
 
 # What the server asks the window about a request that has no reply: `running`, `done` (with the
-# answer, null when it was too large to keep) or `cancelled`. A request the window has never seen
-# is recorded as cancelled by the question itself, so it can never start afterwards; the server
-# then sends it again under a new id. Asking twice gives the same answer.
+# answer, null when it was too large to keep or has been dropped) or `cancelled`. A request the
+# window has never seen is recorded as cancelled by the question itself, so it can never start
+# afterwards; the server then sends it again under a new id. Asking twice gives the same answer.
 _ASK = """\
 (() => {
   const reqs = (window.__brainReqs ??= new Map());
   const req = reqs.get('@ID@') ?? {state: 'cancelled', at: Date.now()};
   reqs.set('@ID@', req);
-  return JSON.stringify({state: req.state, answer: req.answer ?? null});
+  return JSON.stringify({state: req.state, answer: window.__brainAnswers?.get('@ID@') ?? null});
 })()"""
+
+# What the runner answers a call whose id it already knows (the literal in `_RUNNER`): a request
+# the server had cancelled by asking, which reached the window after all.
+_CANCELLED = '{"ok":false,"cancelled":true}'
 
 # The answer of a call to a function the window does not hold (never installed, window reloaded,
 # or another server version replaced the runner).
@@ -414,6 +428,8 @@ class ObsidianCLI:
             )
 
         decoded_stdout = _CLI_ECHO_RE.sub("", stdout.decode(errors="replace"))
+        if request_id is not None and decoded_stdout.strip() == f"=> {_CANCELLED}":
+            raise _NeverRan  # it reached the window after the question cancelled it
         if _OBSIDIAN_APP_PREAMBLE_RE.match(decoded_stdout.lstrip("\r\n")):
             raise ObsidianCLIError(_OBSIDIAN_APP_PREAMBLE_MESSAGE)
         return decoded_stdout

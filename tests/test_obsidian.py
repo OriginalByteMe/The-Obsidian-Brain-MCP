@@ -100,6 +100,8 @@ request = sent[-1] if sent else None
 lose = os.environ.get("FAKE_LOSE_FIRST") if n == 1 else None
 if lose == "arrive":
     hang()  # never reaches the window
+if lose == "late":
+    time.sleep(float(os.environ.get("FAKE_LATE", "0")))  # reaches the window after a while
 if request:
 
     def start(log):
@@ -780,6 +782,18 @@ class TestLostReplies:
         assert fake.window()[request_id_of(first)]["state"] == "cancelled"  # and now never will
         assert len(fake.questions()) == 1
         assert payload_of(first) == payload_of(second) == {"n": 1}
+        fake.assert_all_reaped()
+
+    async def test_a_request_that_arrives_after_it_was_cancelled_is_sent_again(self, fake):
+        """The question cancels the id, then the original reaches the window before the server has
+        read the question's reply: its answer is the cancelled marker, not a result."""
+        fake.script(
+            lose_first="late", late="0.4", question_sleep="0.5", stdout=_envelope(ok=True, value=7)
+        )
+        assert await self.cli(fake).eval("return 1;") == 7
+        first, second = fake.requests()
+        assert fake.window()[request_id_of(first)]["state"] == "cancelled"
+        assert fake.ran() == [request_id_of(second)]  # the late one never ran
         fake.assert_all_reaped()
 
     async def test_a_slow_call_that_is_still_running_is_not_sent_again(self, fake):
