@@ -1,102 +1,73 @@
+"""Domain errors for Obsidian Brain MCP.
+
+Every error subclasses `ToolError`, so one raised inside a tool call reaches the
+model as `is_error=True` with its message and needs no per-tool try/except.
+Messages are short and say what to do next. They never contain note content or the code and
+payload sent to Obsidian; they name the path, heading, link or tag in question (vault-relative:
+the vault's own absolute path is stripped), and cap any CLI output they quote.
 """
-Shared exception hierarchy for Obsidian Brain MCP.
 
-Provides structured errors for CLI subprocess failures,
-note-not-found conditions, timeouts, and binary detection.
-"""
+from mcp.server.mcpserver.exceptions import ToolError
 
 
-class ObsidianCLIError(Exception):
-    """Raised when an Obsidian CLI command fails (non-zero exit code).
-
-    Attributes:
-        returncode: Process exit code.
-        stderr: Standard error output from the CLI process.
-        command: The full command list that was executed.
-    """
-
-    def __init__(self, returncode: int, stderr: str, command: list[str]):
-        self.returncode = returncode
-        self.stderr = stderr
-        self.command = command
-        cmd_str = " ".join(command)
-        super().__init__(
-            f"CLI command failed (exit {returncode}): {cmd_str}\n{stderr}"
-        )
+class ObsidianError(ToolError):
+    """Base class for every error this server raises on purpose."""
 
 
-class NoteNotFoundError(ObsidianCLIError):
-    """Raised when a note does not exist in the vault.
-
-    Attributes:
-        path: The note path that was not found.
-    """
-
-    def __init__(self, path: str, command: list[str] | None = None):
-        self.path = path
-        super().__init__(
-            returncode=1,
-            stderr=f"Note not found: {path}",
-            command=command or ["obsidian", "read", f'path="{path}"'],
-        )
-
-
-class CLITimeoutError(ObsidianCLIError):
-    """Raised when a CLI subprocess exceeds its timeout.
-
-    Attributes:
-        timeout: The timeout value in seconds that was exceeded.
-    """
-
-    def __init__(self, timeout: float, command: list[str]):
-        self.timeout = timeout
-        super().__init__(
-            returncode=-1,
-            stderr=f"Command timed out after {timeout}s",
-            command=command,
-        )
-
-
-class CLINotFoundError(Exception):
-    """Raised when the Obsidian CLI binary cannot be located.
-
-    This is NOT a CLI execution error -- it means the binary itself
-    is missing from PATH and OBSIDIAN_CLI_PATH is not set.
-    """
+class CLINotFoundError(ObsidianError):
+    """The Obsidian CLI binary cannot be located."""
 
     def __init__(self, searched_paths: str | None = None):
         message = (
-            "Obsidian CLI not found.\n\n"
-            "To fix this:\n"
-            "1. Install Obsidian 1.12.4+ from https://obsidian.md\n"
-            "2. Enable CLI: Settings > General > Command line interface\n"
-            "3. Click 'Register CLI' to add to PATH\n"
-            "4. Restart your terminal\n"
-            "5. Verify with: obsidian version\n\n"
-            "Or set OBSIDIAN_CLI_PATH=/path/to/obsidian"
+            "Obsidian CLI not found. Install Obsidian 1.12.4+ from https://obsidian.md, "
+            "enable Settings > General > Command line interface, click 'Register CLI', "
+            "and restart the terminal (check with: obsidian version). "
+            "Or set OBSIDIAN_CLI_PATH=/path/to/obsidian."
         )
         if searched_paths:
-            message = f"Searched: {searched_paths}\n\n{message}"
-        self.searched_paths = searched_paths
+            message = f"Searched: {searched_paths}. {message}"
         super().__init__(message)
 
 
-class ObsidianNotRunningError(Exception):
-    """Raised when Obsidian desktop app is not running.
-
-    The Obsidian 1.12+ CLI works via IPC -- it sends commands to a running
-    Obsidian instance. If Obsidian is not running, CLI commands will hang
-    indefinitely (launching a new Electron instance that waits for GUI
-    interaction instead of processing CLI commands).
-    """
+class ObsidianNotRunningError(ObsidianError):
+    """The Obsidian desktop app is not running (the CLI talks to it over IPC)."""
 
     def __init__(self) -> None:
         super().__init__(
-            "Obsidian desktop app is not running.\n\n"
-            "The Obsidian CLI requires a running Obsidian instance to process "
-            "commands via IPC. Without it, CLI calls will hang indefinitely.\n\n"
-            "To fix this:\n"
-            "1. Open Obsidian desktop app\n"
-            "2. Wait for it to fully load your vault\n"
-            "3. Then retry the MCP tool call"
+            "Obsidian is not running. Open the Obsidian desktop app, wait for the vault "
+            "to load, then retry."
         )
+
+
+class CLITimeoutError(ObsidianError):
+    """A CLI subprocess exceeded its timeout and was killed."""
+
+    def __init__(self, timeout: float, command: str):
+        super().__init__(
+            f"obsidian {command} timed out after {timeout:g}s and was stopped. Obsidian may "
+            "still have carried the command out: check the vault before repeating a write."
+        )
+
+
+class ObsidianCLIError(ObsidianError):
+    """The CLI failed: disabled, vault not found, or unexpected output."""
+
+
+class NoteNotFoundError(ObsidianError):
+    """A requested note, file or folder does not exist in the vault."""
+
+
+class NoteExistsError(ObsidianError):
+    """A note already exists and overwrite was not requested."""
+
+
+class HeadingNotFoundError(ObsidianError):
+    """The requested heading does not exist in the note."""
+
+
+class InvalidArgumentError(ObsidianError):
+    """An argument is invalid: bad path, date, tag, or a binary file read as text."""
+
+
+class ContentTooLargeError(ObsidianError):
+    """The payload exceeds what one CLI call can carry."""

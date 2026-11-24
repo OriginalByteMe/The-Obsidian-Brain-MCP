@@ -1,101 +1,104 @@
-"""
-Pydantic models for Obsidian Brain MCP.
+"""Result models returned by `Vault` and reused as tool return types.
 
-Defines data structures for vault representation, note metadata,
-and API responses.
+Timestamps are timezone-aware UTC `datetime`s (serialized as ISO 8601). Paths are
+vault-relative with forward slashes. Frontmatter is a JSON-safe dict taken from
+Obsidian's metadata cache, so values are typed the way Obsidian types them.
 """
 
 from datetime import datetime
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
 
-class FolderNode(BaseModel):
-    """Represents a folder in the vault hierarchy."""
+class FileInfo(BaseModel):
+    """One file in the vault (any extension)."""
 
-    name: str
-    path: str  # Relative path from vault root, e.g., "Projects/Active/"
-    children: list["FolderNode"] = Field(default_factory=list)
-
-
-class NoteMetadata(BaseModel):
-    """Metadata for a single note in the vault."""
-
-    path: str  # e.g., "Projects/Active/MyProject.md"
-    title: str  # Auto-extracted from filename or H1
-    tags: list[str] = Field(default_factory=list)  # From frontmatter
-    outgoing_links: list[str] = Field(default_factory=list)  # [[wikilinks]] this note contains
-    incoming_links: list[str] = Field(default_factory=list)  # Notes that link TO this note
-    frontmatter: dict = Field(default_factory=dict)  # Full frontmatter as dict
-    modified: datetime | None = None  # Last modified timestamp
+    path: str = Field(description="Vault-relative path, e.g. 'Projects/Plan.md'.")
+    extension: str = Field(description="Extension without the dot, e.g. 'md'.")
+    size: int = Field(description="Size in bytes.")
+    modified: datetime = Field(description="Last modified time (UTC).")
 
 
-class VaultStats(BaseModel):
-    """Aggregate statistics about the vault."""
+class Link(BaseModel):
+    """An outgoing link, embed, or frontmatter link of a note."""
 
-    total_notes: int = 0
-    total_folders: int = 0
-    total_tags: int = 0
-    total_links: int = 0
-    orphan_notes: int = 0  # Notes with no incoming or outgoing links
-
-
-class VaultStructure(BaseModel):
-    """Complete vault structure for caching."""
-
-    folders: list[FolderNode] = Field(default_factory=list)
-    notes: list[NoteMetadata] = Field(default_factory=list)
-    stats: VaultStats = Field(default_factory=VaultStats)
-    refreshed_at: datetime = Field(default_factory=datetime.now)
+    target: str | None = Field(
+        description="Vault path the link resolves to, or null when it does not resolve."
+    )
+    link: str = Field(description="Raw link text as written, e.g. 'Note#Heading'.")
+    display: str | None = Field(default=None, description="Alias or display text, if any.")
+    kind: Literal["link", "embed", "frontmatter"] = Field(
+        description="'link' for [[wikilinks]]/markdown links, 'embed' for ![[embeds]], "
+        "'frontmatter' for links inside properties."
+    )
 
 
-class NoteContent(BaseModel):
-    """Full note content with metadata, returned by get_note."""
+class Note(BaseModel):
+    """A note (or other text file) with its Obsidian-parsed metadata."""
 
     path: str
-    content: str
-    tags: list[str] = Field(default_factory=list)
-    outgoing_links: list[str] = Field(default_factory=list)
-    frontmatter: dict = Field(default_factory=dict)
-    modified: datetime | None = None
+    content: str = Field(description="Exact file text, including frontmatter, BOM and CRLFs.")
+    frontmatter: dict[str, Any] = Field(
+        default_factory=dict, description="Parsed properties, as Obsidian reads them."
+    )
+    tags: list[str] = Field(
+        default_factory=list,
+        description="Every tag (frontmatter and inline), without '#', deduplicated "
+        "case-insensitively like Obsidian.",
+    )
+    links: list[Link] = Field(default_factory=list, description="Outgoing links.")
+    headings: list[str] = Field(default_factory=list, description="Heading texts in order.")
+    modified: datetime
+    size: int = Field(description="Size in bytes.")
 
 
-class FileEntry(BaseModel):
-    """Entry in a directory listing."""
+class TagChange(BaseModel):
+    """What `Vault.update_tags` did to a note's frontmatter tags."""
 
-    name: str
-    type: str  # "file" or "folder"
+    tags: list[str] = Field(description="Frontmatter tags after the call, without '#'.")
+    added: list[str] = Field(description="Tags actually added; empty when all were present.")
+    removed: list[str] = Field(description="Tags actually removed; empty when none were present.")
 
 
 class SearchMatch(BaseModel):
-    """A single search result match."""
+    """One matching line."""
+
+    line: int = Field(description="1-based line number.")
+    text: str = Field(
+        description="The matching line; a line over ~300 characters is cut around the match, "
+        "with '…' marking the cut."
+    )
+
+
+class SearchHit(BaseModel):
+    """A file with its matching lines."""
 
     path: str
-    matches: list[str] = Field(default_factory=list)  # Matched text snippets
-    score: float = 0.0
+    matches: list[SearchMatch]
 
 
-class LinkGraphNode(BaseModel):
-    """Node in a link graph traversal result."""
+class SearchResults(BaseModel):
+    """Search hits, capped at the requested limit."""
+
+    hits: list[SearchHit]
+    truncated: bool = Field(description="True when more files matched than the limit allowed.")
+
+
+class NoteSnapshot(BaseModel):
+    """One markdown note inside a `VaultSnapshot` (no content)."""
 
     path: str
-    depth: int
+    size: int
+    modified: datetime
+    frontmatter: dict[str, Any] = Field(default_factory=dict)
+    tags: list[str] = Field(default_factory=list)
+    links: list[Link] = Field(default_factory=list)
+    headings: list[str] = Field(default_factory=list)
 
 
-class LinkGraphEdge(BaseModel):
-    """Edge in a link graph traversal result."""
+class VaultSnapshot(BaseModel):
+    """The whole vault's structure and metadata, gathered by one eval."""
 
-    source: str  # Note path that contains the link
-    target: str  # Note path being linked to
-
-
-class LinkGraph(BaseModel):
-    """Subgraph of notes centered on a starting node."""
-
-    center: str
-    nodes: list[LinkGraphNode] = Field(default_factory=list)
-    edges: list[LinkGraphEdge] = Field(default_factory=list)
-
-
-# Enable forward reference resolution for recursive types
-FolderNode.model_rebuild()
+    notes: list[NoteSnapshot] = Field(description="Every markdown note, sorted by path.")
+    folders: list[str] = Field(description="Every folder path (root excluded), sorted.")

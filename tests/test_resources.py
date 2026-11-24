@@ -1,253 +1,168 @@
-"""Protocol-level tests for vault resources."""
+"""Resources, read through an in-memory MCP client against `FakeVault` (no Obsidian needed)."""
 
-from __future__ import annotations
-
-import asyncio
 import json
-from datetime import UTC, datetime
+from typing import Any
 
 import pytest
-from mcp.shared.exceptions import McpError
-from mcp.shared.memory import create_connected_server_and_client_session
-from mcp.types import TextResourceContents
-from pydantic import AnyUrl
+from mcp import Client
+from mcp.server.mcpserver import MCPServer
+from mcp.shared.exceptions import MCPError
+from mcp_types import INVALID_PARAMS
 
-from obsidian_brain.cache import vault_cache
-from obsidian_brain.exceptions import NoteNotFoundError
-from obsidian_brain.models import NoteMetadata, VaultStructure
+from obsidian_brain import resources
+from obsidian_brain.exceptions import ObsidianCLIError
+from obsidian_brain.knowledge import KNOWLEDGE_BASE_PATH
 
+from .conftest import read_resource
+from .fake_vault import FakeVault
 
-class FakeNoteClient:
-    """Deterministic note reader used behind the real in-memory MCP session."""
-
-    def __init__(self) -> None:
-        self.notes: dict[str, str] = {
-            "Inbox.md": "# Inbox\n",
-            "Projects/Nested Plan.md": (
-                "---\ntags:\n  - project\naliases:\n  - Plan\n---\n# Nested Plan\n\nShip it.\n"
-            ),
-            "Hidden.md": "# Not in the cache\n",
-            "Obsidian Brain/knowledge-base.md": "# Knowledge Base\n\nGenerated content.\n",
-        }
-        self.read_paths: list[str] = []
-
-    async def get_note(self, path: str) -> dict[str, object]:
-        self.read_paths.append(path)
-        if path not in self.notes:
-            raise NoteNotFoundError(path)
-        raw = self.notes[path]
-        # Mirror the real client: body in `content`, whole file in `raw`.
-        body = raw.split("---\n", 2)[-1] if raw.startswith("---\n") else raw
-        return {"path": path, "content": body, "raw": raw}
+FILES = {
+    "Home.md": "# Home\n\n[[Plan]] #index",
+    "Projects/Alpha/Plan.md": "---\ntags: [project]\n---\n# Plan\n\n[[Home]]",
+    "Odd #1 name.md": "x",
+    "Attachments/diagram.png": "binary",
+    "Obsidian Brain/config.md": "```yaml\na: 1\n```",
+}
 
 
 @pytest.fixture
-async def connected_resource_session(monkeypatch: pytest.MonkeyPatch):
-    from obsidian_brain.server import client, mcp
-
-    structure = VaultStructure(
-        notes=[
-            NoteMetadata(path="Projects/Nested Plan.md", title="Nested Plan"),
-            NoteMetadata(path="Inbox.md", title="Inbox"),
-        ],
-        refreshed_at=datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC),
-    )
-    fake_client = FakeNoteClient()
-    monkeypatch.setattr(vault_cache, "_structure", structure)
-    monkeypatch.setattr(
-        vault_cache,
-        "_file_paths",
-        [
-            "Projects/Nested Plan.md",
-            "Inbox.md",
-            "Assets/cover.PNG",
-            "Boards/plan.canvas",
-            "config.yml",
-        ],
-        raising=False,
-    )
-    monkeypatch.setattr(client, "get_note", fake_client.get_note)
-
-    ready = asyncio.get_running_loop().create_future()
-    stop = asyncio.Event()
-
-    async def connect() -> None:
-        try:
-            async with create_connected_server_and_client_session(mcp) as session:
-                ready.set_result(session)
-                await stop.wait()
-        except BaseException as error:
-            if not ready.done():
-                ready.set_exception(error)
-            else:
-                raise
-
-    task = asyncio.create_task(connect())
-    try:
-        yield await ready, fake_client
-    finally:
-        stop.set()
-        await task
+def vault(monkeypatch: pytest.MonkeyPatch) -> FakeVault:
+    fake = FakeVault(FILES)
+    monkeypatch.setattr(resources, "get_vault", lambda: fake)
+    return fake
 
 
-@pytest.mark.asyncio
-async def test_note_index_requests_refresh_when_cache_is_uninitialized(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    from obsidian_brain.server import mcp
+@pytest.fixture
+def server() -> MCPServer:
+    app = MCPServer("test")
+    resources.register(app)
+    return app
 
-    monkeypatch.setattr(vault_cache, "_structure", None)
-    async with create_connected_server_and_client_session(mcp) as session:
-        result = await session.read_resource(AnyUrl("vault://files"))
-    content = result.contents[0]
-    assert isinstance(content, TextResourceContents)
-    assert json.loads(content.text) == {
-        "error": "Call refresh_vault_structure to initialize or update this cached index."
+
+async def test_resources_are_listed_with_json_mime_types(server: MCPServer) -> None:
+    async with Client(server) as client:
+        listed = {str(r.uri): r.mime_type for r in (await client.list_resources()).resources}
+        templates = {
+            t.uri_template: t.mime_type
+            for t in (await client.list_resource_templates()).resource_templates
+        }
+    assert listed == {
+        "vault://files": "application/json",
+        "vault://tags": "application/json",
+        "vault://stats": "application/json",
+        "vault://knowledge": "text/markdown",
     }
+    assert templates == {"vault://note/{+path}": "text/markdown"}
 
 
-@pytest.mark.asyncio
-async def test_lists_note_index_and_read_template_over_protocol(
-    connected_resource_session,
-):
-    (session, _client) = connected_resource_session
-    resources = (await session.list_resources()).resources
-    files_resource = next(item for item in resources if str(item.uri) == "vault://files")
-    assert files_resource.mimeType == "application/json"
-    assert "refresh_vault_structure" in (files_resource.description or "")
-
-    templates = (await session.list_resource_templates()).resourceTemplates
-    note_template = next(item for item in templates if item.uriTemplate == "vault://note/{path}")
-    assert note_template.mimeType == "text/markdown"
+async def test_the_tags_resource_says_it_counts_occurrences_not_notes(server: MCPServer) -> None:
+    async with Client(server) as client:
+        tags = next(
+            r for r in (await client.list_resources()).resources if str(r.uri) == "vault://tags"
+        )
+    description = (tags.description or "").lower()
+    assert "occurrence" in description and "note count" not in description
 
 
-@pytest.mark.asyncio
-async def test_reads_cached_index_and_nested_note_over_protocol(
-    connected_resource_session,
-):
-    (session, client) = connected_resource_session
-    index_result = await session.read_resource(AnyUrl("vault://files"))
-    index_content = index_result.contents[0]
-    assert isinstance(index_content, TextResourceContents)
-    index = json.loads(index_content.text)
-    assert index == {
-        "files": [
-            {
-                "path": "Assets/cover.PNG",
-                "extension": ".png",
-                "readable": False,
-            },
-            {
-                "path": "Boards/plan.canvas",
-                "extension": ".canvas",
-                "readable": False,
-            },
-            {
-                "path": "Inbox.md",
-                "extension": ".md",
-                "readable": True,
-                "uri": "vault://note/Inbox.md",
-            },
-            {
-                "path": "Projects/Nested Plan.md",
-                "extension": ".md",
-                "readable": True,
-                "uri": "vault://note/Projects%2FNested%20Plan.md",
-            },
-            {
-                "path": "config.yml",
-                "extension": ".yml",
-                "readable": False,
-            },
-        ],
-        "refreshed_at": "2026-01-02T03:04:05+00:00",
-        "refresh": "Call refresh_vault_structure to initialize or update this cached index.",
-    }
-
-    note_result = await session.read_resource(AnyUrl("vault://note/Projects%2FNested%20Plan.md"))
-    note_content = note_result.contents[0]
-    assert isinstance(note_content, TextResourceContents)
-    # The resource must serve the file verbatim, frontmatter included.
-    assert note_content.text == (
-        "---\ntags:\n  - project\naliases:\n  - Plan\n---\n# Nested Plan\n\nShip it.\n"
-    )
-    assert note_content.mimeType == "text/markdown"
-    assert client.read_paths == ["Projects/Nested Plan.md"]
+async def test_files_lists_every_file_with_note_uris_for_markdown(
+    server: MCPServer, vault: FakeVault
+) -> None:
+    text, mime = await read_resource(server, "vault://files")
+    assert mime == "application/json"
+    listing = json.loads(text)
+    assert listing["total"] == len(FILES) == len(listing["files"])
+    by_path = {f["path"]: f for f in listing["files"]}
+    assert [f["path"] for f in listing["files"]] == sorted(FILES)
+    assert by_path["Projects/Alpha/Plan.md"]["uri"] == "vault://note/Projects/Alpha/Plan.md"
+    assert by_path["Odd #1 name.md"]["uri"] == "vault://note/Odd%20%231%20name.md"
+    assert "uri" not in by_path["Attachments/diagram.png"]
+    assert by_path["Home.md"]["modified"].endswith("Z")
 
 
-@pytest.mark.asyncio
-async def test_reads_knowledge_base_resource_from_expected_path(
-    connected_resource_session,
-):
-    """vault://knowledge must read the same fixed, CLI-writable .md path
-    that create_vault_knowledge_base/get_knowledge_base_status use."""
-    from obsidian_brain.knowledge import KNOWLEDGE_BASE_PATH
-
-    assert KNOWLEDGE_BASE_PATH == "Obsidian Brain/knowledge-base.md"
-
-    (session, client) = connected_resource_session
-    result = await session.read_resource(AnyUrl("vault://knowledge"))
-    content = result.contents[0]
-    assert isinstance(content, TextResourceContents)
-    assert content.text == "# Knowledge Base\n\nGenerated content.\n"
-    assert client.read_paths == ["Obsidian Brain/knowledge-base.md"]
-
-
-@pytest.mark.asyncio
-async def test_invalidated_note_stays_indexed_and_reads_live_content(
-    connected_resource_session,
-):
-    (session, client) = connected_resource_session
-    await vault_cache.invalidate_path("Inbox.md", exists=True)
-
-    index_result = await session.read_resource(AnyUrl("vault://files"))
-    index_content = index_result.contents[0]
-    assert isinstance(index_content, TextResourceContents)
-    paths = [entry["path"] for entry in json.loads(index_content.text)["files"]]
-    assert "Inbox.md" in paths
-
-    note_result = await session.read_resource(AnyUrl("vault://note/Inbox.md"))
-    note_content = note_result.contents[0]
-    assert isinstance(note_content, TextResourceContents)
-    assert note_content.text == "# Inbox\n"
-    assert client.read_paths == ["Inbox.md"]
-
-
-@pytest.mark.asyncio
-async def test_reads_valid_markdown_path_without_cached_metadata(
-    connected_resource_session,
-):
-    (session, client) = connected_resource_session
-    result = await session.read_resource(AnyUrl("vault://note/Hidden.md"))
-    content = result.contents[0]
-    assert isinstance(content, TextResourceContents)
-    assert content.text == "# Not in the cache\n"
-    assert client.read_paths == ["Hidden.md"]
-
-
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "uri",
     [
-        "vault://note/%2E%2E%2Fsecret.md",
-        "vault://note/config.yml",
+        "vault://note/Projects/Alpha/Plan.md",
+        "vault://note/Projects%2FAlpha%2FPlan.md",
     ],
+    ids=["unencoded-slash", "encoded-slash"],
 )
-async def test_rejects_unsafe_or_non_markdown_note_resources(
-    connected_resource_session,
-    uri: str,
-):
-    (session, client) = connected_resource_session
-    with pytest.raises(McpError):
-        _ = await session.read_resource(AnyUrl(uri))
-    assert client.read_paths == []
+async def test_note_resource_takes_slashes_encoded_or_not(
+    server: MCPServer, vault: FakeVault, uri: str
+) -> None:
+    text, mime = await read_resource(server, uri)
+    assert text == FILES["Projects/Alpha/Plan.md"] and mime == "text/markdown"
 
 
-@pytest.mark.asyncio
-async def test_missing_note_error_comes_from_live_client(
-    connected_resource_session,
-):
-    (session, client) = connected_resource_session
-    with pytest.raises(McpError):
-        _ = await session.read_resource(AnyUrl("vault://note/Missing.md"))
-    assert client.read_paths == ["Missing.md"]
+async def test_listed_note_uris_read_back(server: MCPServer, vault: FakeVault) -> None:
+    listing = json.loads((await read_resource(server, "vault://files"))[0])
+    for entry in listing["files"]:
+        if "uri" in entry:
+            assert (await read_resource(server, entry["uri"]))[0] == FILES[entry["path"]]
+
+
+async def test_missing_note_is_not_found_without_cli_details(
+    server: MCPServer, vault: FakeVault
+) -> None:
+    with pytest.raises(MCPError) as caught:
+        await read_resource(server, "vault://note/Missing.md")
+    assert caught.value.code == INVALID_PARAMS
+    assert "Missing.md" in caught.value.message and "obsidian" not in caught.value.message.lower()
+
+
+@pytest.mark.parametrize(
+    "uri",
+    ["vault://note/..%2Fetc%2Fpasswd", "vault://note/%2Fetc%2Fpasswd", "vault://note/a%00b.md"],
+)
+async def test_note_resource_refuses_traversal(
+    server: MCPServer, vault: FakeVault, uri: str
+) -> None:
+    with pytest.raises(MCPError):
+        await read_resource(server, uri)
+
+
+async def test_vault_errors_become_resource_errors_not_bodies(
+    server: MCPServer, vault: FakeVault, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def boom(*args: Any, **kwargs: Any) -> Any:
+        raise ObsidianCLIError("Obsidian's command line interface is disabled.")
+
+    monkeypatch.setattr(vault, "snapshot", boom)
+    monkeypatch.setattr(vault, "tags", boom)
+    for uri in ("vault://stats", "vault://tags"):
+        with pytest.raises(MCPError, match="command line interface is disabled"):
+            await read_resource(server, uri)
+
+
+async def test_tags_are_json_sorted_by_count(server: MCPServer, vault: FakeVault) -> None:
+    text, mime = await read_resource(server, "vault://tags")
+    assert mime == "application/json"
+    assert json.loads(text) == {"index": 1, "project": 1}
+    assert list(json.loads(text)) == ["index", "project"]
+
+
+async def test_stats_are_json_and_leave_out_obsidian_brain(
+    server: MCPServer, vault: FakeVault
+) -> None:
+    text, mime = await read_resource(server, "vault://stats")
+    assert mime == "application/json"
+    assert json.loads(text) == {
+        "total_notes": 3,
+        "total_folders": 3,  # Projects, Projects/Alpha, Attachments
+        "total_tags": 2,
+        "total_links": 2,
+        "orphan_notes": 1,
+    }
+
+
+async def test_knowledge_resource_reads_the_file_or_says_how_to_make_it(
+    server: MCPServer, vault: FakeVault
+) -> None:
+    with pytest.raises(MCPError, match="build_knowledge_base") as caught:
+        await read_resource(server, "vault://knowledge")
+    assert caught.value.code == INVALID_PARAMS
+    vault.files[KNOWLEDGE_BASE_PATH] = "# Vault Knowledge Base\n"
+    assert await read_resource(server, "vault://knowledge") == (
+        "# Vault Knowledge Base\n",
+        "text/markdown",
+    )

@@ -1,198 +1,91 @@
-"""
-Memory manager for Obsidian Brain MCP.
+"""Memory naming and file format: pure helpers shared by memories, onboarding and the knowledge base.
 
-Handles persistent memories stored as markdown files in Obsidian Brain/memories/
-to enable cross-session context retention for LLMs.
+A memory is a markdown file under `Obsidian Brain/memories/`. Its identity is a slug of its
+name, so `list_memories`, `read_memory`, `write_memory` and `delete_memory` all agree on which
+file a name means. Frontmatter values come from Obsidian (`Note.frontmatter`); the only text
+parsing here is locating the frontmatter block, by lines, so a `---` inside a value is safe.
 """
-
-from __future__ import annotations
 
 import re
-from dataclasses import dataclass
-from datetime import datetime
-from typing import TYPE_CHECKING
+import unicodedata
+from collections.abc import Mapping
+from datetime import UTC, datetime
 
 import yaml
 
-from .onboarding import MEMORIES_PATH
+from .exceptions import InvalidArgumentError
 
-if TYPE_CHECKING:
-    from .protocol import VaultClient
+BRAIN_DIR = "Obsidian Brain"
+MEMORIES_PATH = f"{BRAIN_DIR}/memories"
 
+# Longest slug (UTF-8 bytes) that still leaves room for ".md" inside a 255-byte file name.
+_MAX_SLUG_BYTES = 200
 
-@dataclass
-class Memory:
-    """Represents a single memory file."""
-
-    name: str
-    content: str
-    frontmatter: dict
-    created: str | None = None
-    updated: str | None = None
-    memory_type: str | None = None
+# The frontmatter block: an opening `---` line, then the first line that is only `---`.
+_FRONTMATTER = re.compile(r"\A\ufeff?---[ \t]*\r?\n(?:.*?\r?\n)?---[ \t]*(?:\r?\n|\Z)", re.DOTALL)
 
 
-class MemoryManager:
+def utc_now() -> str:
+    """Current UTC time as `2026-11-23T03:24:12Z`."""
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def display_name(name: str) -> str:
+    """The name as stored: NFC, whitespace collapsed, without a trailing `.md`."""
+    text = " ".join(unicodedata.normalize("NFC", name).split())
+    return text[:-3].rstrip() if text.lower().endswith(".md") else text
+
+
+def slugify(name: str) -> str:
+    """The stable file stem for a memory name; raises when nothing usable is left.
+
+    NFC-normalised and casefolded, every run of characters that are not letters, digits or
+    combining marks becomes one `-`. 'Project X', 'project_x' and 'PROJECT-X' share the slug
+    `project-x`; 'A/B' and 'AB' do not.
     """
-    Manages persistent memories in the vault.
-
-    Memories are markdown files stored in Obsidian Brain/memories/
-    that persist across sessions. Each memory has:
-    - A descriptive name (filename without .md)
-    - YAML frontmatter with metadata
-    - Markdown content body
-    """
-
-    def __init__(self, client: VaultClient | None = None):
-        self.client = client
-        self.memories_path = MEMORIES_PATH
-
-    def get_memory_path(self, name: str) -> str:
-        """
-        Get the full path for a memory file.
-
-        Args:
-            name: Memory name (without .md extension)
-
-        Returns:
-            Full path to memory file
-        """
-        # Sanitize name for filesystem
-        safe_name = self._sanitize_name(name)
-        return f"{self.memories_path}/{safe_name}.md"
-
-    def _sanitize_name(self, name: str) -> str:
-        """
-        Sanitize memory name for use as filename.
-
-        Args:
-            name: Raw memory name
-
-        Returns:
-            Filesystem-safe name
-        """
-        # Remove .md extension if provided
-        if name.endswith(".md"):
-            name = name[:-3]
-        # Replace spaces with hyphens, remove special chars
-        safe = re.sub(r"[^\w\s-]", "", name)
-        safe = re.sub(r"[\s_]+", "-", safe)
-        return safe.lower().strip("-")
-
-    def parse_memory(self, content: str, name: str) -> Memory:
-        """
-        Parse a memory file content into Memory object.
-
-        Args:
-            content: Raw file content
-            name: Memory name
-
-        Returns:
-            Parsed Memory object
-        """
-        frontmatter: dict = {}
-        body = content
-
-        # Extract YAML frontmatter if present
-        if content.startswith("---"):
-            parts = content.split("---", 2)
-            if len(parts) >= 3:
-                try:
-                    frontmatter = yaml.safe_load(parts[1]) or {}
-                    body = parts[2].strip()
-                except yaml.YAMLError:
-                    # If YAML parsing fails, treat entire content as body
-                    pass
-
-        return Memory(
-            name=name,
-            content=body,
-            frontmatter=frontmatter,
-            created=frontmatter.get("created"),
-            updated=frontmatter.get("updated"),
-            memory_type=frontmatter.get("type"),
+    text = unicodedata.normalize("NFC", display_name(name).casefold())
+    text = "".join(c if c.isalnum() or unicodedata.category(c)[0] == "M" else "-" for c in text)
+    slug = re.sub(r"-+", "-", text).strip("-")
+    if not slug:
+        raise InvalidArgumentError(
+            f"Memory name {name!r} has no letters or digits to build a file name from."
         )
-
-    def create_memory_content(
-        self,
-        content: str,
-        memory_type: str | None = None,
-        extra_frontmatter: dict | None = None,
-    ) -> str:
-        """
-        Create formatted memory content with frontmatter.
-
-        Args:
-            content: Memory body content
-            memory_type: Optional type classification
-            extra_frontmatter: Additional frontmatter fields
-
-        Returns:
-            Complete markdown content with frontmatter
-        """
-        now = datetime.now().isoformat()
-
-        frontmatter: dict = {
-            "created": now,
-            "updated": now,
-        }
-
-        if memory_type:
-            frontmatter["type"] = memory_type
-
-        if extra_frontmatter:
-            frontmatter.update(extra_frontmatter)
-
-        yaml_content = yaml.dump(frontmatter, default_flow_style=False, sort_keys=False)
-
-        return f"---\n{yaml_content}---\n\n{content}"
-
-    def update_memory_content(self, existing_content: str, new_content: str) -> str:
-        """
-        Update memory content while preserving created date.
-
-        Args:
-            existing_content: Current file content
-            new_content: New body content
-
-        Returns:
-            Updated markdown content
-        """
-        existing = self.parse_memory(existing_content, "temp")
-
-        # Preserve original frontmatter, update timestamp
-        frontmatter = existing.frontmatter.copy()
-        frontmatter["updated"] = datetime.now().isoformat()
-
-        yaml_content = yaml.dump(frontmatter, default_flow_style=False, sort_keys=False)
-
-        return f"---\n{yaml_content}---\n\n{new_content}"
-
-    def list_from_files(self, files: list[str]) -> list[dict]:
-        """
-        List all memories from a file listing.
-
-        Args:
-            files: List of file paths from vault
-
-        Returns:
-            List of memory info dicts with name and path
-        """
-        memories = []
-        prefix = f"{self.memories_path}/"
-
-        for path in files:
-            if path.startswith(prefix) and path.endswith(".md"):
-                name = path[len(prefix) : -3]  # Remove prefix and .md
-                memories.append(
-                    {
-                        "name": name,
-                        "path": path,
-                    }
-                )
-
-        return memories
+    if len(slug.encode()) > _MAX_SLUG_BYTES:
+        raise InvalidArgumentError(
+            f"Memory name is too long ({len(slug.encode())} bytes after normalising; "
+            f"the limit is {_MAX_SLUG_BYTES})."
+        )
+    return slug
 
 
-# Global singleton instance
-memory_manager = MemoryManager()
+def memory_name_of(path: str) -> str:
+    """The name a memory file answers to when it has no `name` property: its path in the folder."""
+    return path.removeprefix(f"{MEMORIES_PATH}/").removesuffix(".md")
+
+
+def split_frontmatter(text: str) -> tuple[str, str]:
+    """Split file text into (frontmatter block with fences, body); the block is '' if absent.
+
+    One blank line after the block belongs to the block, so `memory_text` and this are inverses.
+    """
+    match = _FRONTMATTER.match(text)
+    if not match:
+        return "", text
+    return match.group(), re.sub(r"\A\r?\n", "", text[match.end() :], count=1)
+
+
+def frontmatter_yaml(frontmatter: Mapping[str, object]) -> str:
+    """The YAML lines of a mapping (keys in given order), each ending in a newline."""
+    return yaml.safe_dump(
+        frontmatter, sort_keys=False, allow_unicode=True, width=1_000_000, default_flow_style=False
+    )
+
+
+def frontmatter_block(frontmatter: Mapping[str, object]) -> str:
+    """Render a dict as a `---` fenced YAML block (always valid YAML, keys in given order)."""
+    return f"---\n{frontmatter_yaml(frontmatter)}---\n"
+
+
+def memory_text(frontmatter: Mapping[str, object], body: str) -> str:
+    """Full file text for a memory: frontmatter block, one blank line, body."""
+    return f"{frontmatter_block(frontmatter)}\n{body}"

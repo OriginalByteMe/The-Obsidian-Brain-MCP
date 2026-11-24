@@ -1,313 +1,218 @@
-"""
-Memory tools for Obsidian Brain MCP.
+"""Memory tools: notes the model keeps for itself across sessions, in `Obsidian Brain/memories/`."""
 
-Provides tools for managing persistent memories that store cross-session
-context about the vault.
-"""
+from datetime import datetime
+from typing import Annotated, Any, Literal
 
-from __future__ import annotations
+from mcp.server.mcpserver import MCPServer
+from pydantic import BaseModel, Field
 
-import json
-from typing import TYPE_CHECKING
+from ..exceptions import InvalidArgumentError, NoteExistsError, NoteNotFoundError
+from ..memory import (
+    MEMORIES_PATH,
+    display_name,
+    memory_name_of,
+    memory_text,
+    slugify,
+    split_frontmatter,
+    utc_now,
+)
+from ..models import NoteSnapshot
+from ..vault import Vault, get_vault
+from .notes import DESTRUCTIVE, READ_ONLY
 
-from ..cache import vault_cache
-from ..exceptions import NoteNotFoundError
-from ..memory import memory_manager
-from ..onboarding import MEMORIES_PATH
-from .errors import OPERATIONAL_ERRORS, dumps, error_json
+MemoryName = Annotated[
+    str,
+    Field(
+        min_length=1,
+        max_length=200,
+        description="Memory name, e.g. 'vault-overview' or 'Project Alpha decisions'. Names are "
+        "matched by slug: lowercased, every run of characters other than letters and digits "
+        "becomes one '-'. 'Project X' and 'project_x' are the same memory; 'A/B' and 'AB' are not.",
+    ),
+]
 
-if TYPE_CHECKING:
-    from ..protocol import VaultClient
+
+class MemoryInfo(BaseModel):
+    name: str = Field(description="The memory's name, as stored in its `name` property.")
+    path: str = Field(description="Vault path of the memory file.")
+    type: str | None = Field(description="Memory type from frontmatter, if set.")
+    created: str | None = Field(description="`created` frontmatter value, if set.")
+    updated: str | None = Field(description="`updated` frontmatter value, if set.")
+    modified: datetime = Field(description="File modification time (UTC).")
 
 
-def register_memory_tools(server, client: VaultClient) -> None:
-    """Register all memory tools with the MCP server."""
+class MemoryList(BaseModel):
+    folder: str = Field(description="Folder the memories live in.")
+    memories: list[MemoryInfo] = Field(description="Sorted by path.")
 
-    @server.tool()
-    async def list_memories() -> str:
+
+class MemoryContent(MemoryInfo):
+    content: str = Field(description="Memory body, without the frontmatter block.")
+    tags: list[str] = Field(description="Every tag in the memory, without '#'.")
+    frontmatter: dict[str, Any] = Field(description="All frontmatter properties.")
+
+
+class MemoryWritten(BaseModel):
+    name: str
+    path: str
+    action: Literal["created", "updated"]
+
+
+class MemoryDeleted(BaseModel):
+    name: str
+    path: str = Field(description="Where the file was; it is in Obsidian's trash now.")
+
+
+def _text(value: object) -> str | None:
+    return None if value is None else str(value)
+
+
+def _name(note: NoteSnapshot) -> str:
+    """A memory's name: its `name` property, else its file name inside the memories folder."""
+    stored = note.frontmatter.get("name")
+    return display_name(str(stored)) if stored else memory_name_of(note.path)
+
+
+def _info(note: NoteSnapshot) -> MemoryInfo:
+    fm = note.frontmatter
+    return MemoryInfo(
+        name=_name(note),
+        path=note.path,
+        type=_text(fm.get("type")),
+        created=_text(fm.get("created")),
+        updated=_text(fm.get("updated")),
+        modified=note.modified,
+    )
+
+
+async def _find(vault: Vault, name: str) -> NoteSnapshot | None:
+    """The one memory whose name has this slug; None if there is none, an error if several."""
+    slug = slugify(name)
+    matches = [
+        n for n in (await vault.snapshot(MEMORIES_PATH)).notes if _slug_or_none(_name(n)) == slug
+    ]
+    if len(matches) > 1:
+        paths = ", ".join(n.path for n in matches)
+        raise InvalidArgumentError(
+            f"Memory name {name!r} is ambiguous: {paths} all reduce to '{slug}'. "
+            "Rename or delete all but one in Obsidian."
+        )
+    return matches[0] if matches else None
+
+
+def _slug_or_none(name: str) -> str | None:
+    try:
+        return slugify(name)
+    except InvalidArgumentError:
+        return None
+
+
+def _missing(name: str) -> NoteNotFoundError:
+    return NoteNotFoundError(f"No memory named {name!r}. Use list_memories to see the names.")
+
+
+def register(server: MCPServer) -> None:
+    @server.tool(annotations=READ_ONLY)
+    async def list_memories() -> MemoryList:
+        """List every memory with its type and timestamps, without reading their bodies.
+
+        Use read_memory to open one, write_memory to save one, delete_memory to drop one.
+        Start a session by listing, then read only the memories relevant to the task.
+        Example: list_memories()
         """
-        List all available memories in the vault.
+        notes = (await get_vault().snapshot(MEMORIES_PATH)).notes
+        return MemoryList(folder=MEMORIES_PATH, memories=[_info(n) for n in notes])
 
-        Memories are persistent markdown files stored in `Obsidian Brain/memories/`
-        that provide cross-session context.
+    @server.tool(annotations=READ_ONLY)
+    async def read_memory(name: MemoryName) -> MemoryContent:
+        """Read one memory: body, type, timestamps, tags and all frontmatter.
 
-        Returns:
-            JSON array of memory objects with:
-            - name: memory identifier (filename without .md)
-            - path: full path in vault
-            - type: memory type from frontmatter (if set)
-            - updated: last update timestamp (if available)
+        Use list_memories to see which names exist, write_memory to change one.
+        Example: read_memory(name="vault-overview")
         """
-        try:
-            # List all files in memories folder
-            all_files = await client.get_all_files("/")
-            memory_files = memory_manager.list_from_files(all_files)
+        vault = get_vault()
+        found = await _find(vault, name)
+        if found is None:
+            raise _missing(name)
+        note = await vault.read_note(found.path)
+        return MemoryContent(
+            **_info(found).model_dump(),
+            content=split_frontmatter(note.content)[1],
+            tags=note.tags,
+            frontmatter=note.frontmatter,
+        )
 
-            # Get metadata for each memory
-            memories = []
-            for mem_info in memory_files:
-                try:
-                    data = await client.get_note(mem_info["path"])
-                    frontmatter = data.get("frontmatter", {})
-                    memories.append(
-                        {
-                            "name": mem_info["name"],
-                            "path": mem_info["path"],
-                            "type": frontmatter.get("type"),
-                            "created": frontmatter.get("created"),
-                            "updated": frontmatter.get("updated"),
-                        }
-                    )
-                except NoteNotFoundError:
-                    # Skip if file was deleted between listing and reading
-                    pass
-
-            return dumps(
-                {
-                    "count": len(memories),
-                    "memories": memories,
-                    "memories_path": MEMORIES_PATH,
-                }
-            )
-
-        except OPERATIONAL_ERRORS as error:
-            return error_json(error)
-
-    @server.tool()
-    async def read_memory(name: str) -> str:
-        """
-        Read the content of a specific memory.
-
-        Use this tool to retrieve context stored in previous sessions.
-        Only read memories that are relevant to the current task.
-
-        Args:
-            name: Memory name (e.g., "vault-overview", "conventions")
-
-        Returns:
-            JSON with memory content and metadata
-        """
-        path = memory_manager.get_memory_path(name)
-
-        try:
-            data = await client.get_note(path)
-            content = data.get("content", "")
-            frontmatter = data.get("frontmatter", {})
-
-            # Parse the memory
-            memory = memory_manager.parse_memory(
-                f"---\n{_format_frontmatter(frontmatter)}---\n\n{content}",
-                name,
-            )
-
-            return dumps(
-                {
-                    "name": name,
-                    "path": path,
-                    "content": memory.content,
-                    "type": memory.memory_type,
-                    "created": memory.created,
-                    "updated": memory.updated,
-                    "frontmatter": frontmatter,
-                }
-            )
-
-        except NoteNotFoundError:
-            return json.dumps(
-                {
-                    "error": True,
-                    "type": "MemoryNotFoundError",
-                    "message": f"Memory '{name}' not found",
-                    "path": path,
-                    "suggestion": "Use list_memories to see available memories",
-                }
-            )
-        except OPERATIONAL_ERRORS as error:
-            return error_json(error)
-
-    @server.tool()
+    @server.tool(annotations=DESTRUCTIVE)
     async def write_memory(
-        name: str,
-        content: str,
-        memory_type: str | None = None,
-    ) -> str:
+        name: MemoryName,
+        content: Annotated[
+            str,
+            Field(
+                description="Markdown body of the memory, written verbatim. Replaces the old body; "
+                "frontmatter properties (tags, custom ones, created) are kept."
+            ),
+        ],
+        memory_type: Annotated[
+            str | None,
+            Field(
+                max_length=50,
+                description="Free-form kind, e.g. 'project', 'preference', 'learning'. "
+                "Omit to keep the current type (or none for a new memory).",
+            ),
+        ] = None,
+    ) -> MemoryWritten:
+        """Create a memory, or replace the body of the one with this name.
+
+        Use it for project context, user preferences, conventions and learnings worth keeping
+        across sessions. A new memory is saved as `Obsidian Brain/memories/<slug>.md`. Updating
+        keeps `created` and every other property and sets `updated`. Fails, instead of
+        overwriting, when a memory under a different spelling already has the same slug: write
+        to the name list_memories shows. Use read_memory first to extend rather than replace.
+        Example: write_memory(name="Project Alpha", content="Deadline is May 3.", memory_type="project")
         """
-        Create or update a memory with the given content.
-
-        Use this to store useful information about the vault for future sessions.
-        Good memory candidates:
-        - Project context and goals
-        - User preferences discovered during conversation
-        - Important patterns or conventions not in initial analysis
-        - Session summaries and learnings
-
-        Args:
-            name: Memory name (will be sanitized for filesystem)
-            content: Markdown content for the memory body
-            memory_type: Optional type classification (e.g., "project", "preference", "learning")
-
-        Returns:
-            JSON with success status and file path
-        """
-        path = memory_manager.get_memory_path(name)
-
-        try:
-            # Check if memory already exists
-            try:
-                existing = await client.get_note(path)
-                existing_content = existing.get("raw", existing.get("content", ""))
-                # Update existing memory
-                full_content = memory_manager.update_memory_content(existing_content, content)
-                action = "updated"
-            except NoteNotFoundError:
-                # Create new memory
-                full_content = memory_manager.create_memory_content(
-                    content, memory_type=memory_type
-                )
-                action = "created"
-
-            await client.update_note(path, full_content)
-
-            await vault_cache.sync_note(client, path)
-
-            return json.dumps(
-                {
-                    "success": True,
-                    "action": action,
-                    "name": name,
-                    "path": path,
-                    "message": f"Memory '{name}' {action} successfully",
-                }
+        vault = get_vault()
+        shown = display_name(name)
+        found = await _find(vault, name)
+        now = utc_now()
+        if found is None:
+            frontmatter: dict[str, object] = {"name": shown}
+            if memory_type:
+                frontmatter["type"] = memory_type
+            frontmatter |= {"created": now, "updated": now}
+            path = await vault.write_note(
+                f"{MEMORIES_PATH}/{slugify(name)}.md", memory_text(frontmatter, content)
             )
+            return MemoryWritten(name=shown, path=path, action="created")
 
-        except OPERATIONAL_ERRORS as error:
-            return error_json(error)
-
-    @server.tool()
-    async def delete_memory(name: str) -> str:
-        """
-        Delete a memory from the vault.
-
-        Use this when a memory is no longer relevant or contains outdated information.
-
-        Args:
-            name: Memory name to delete
-
-        Returns:
-            JSON with success status
-        """
-        path = memory_manager.get_memory_path(name)
-
-        try:
-            await client.delete_note(path)
-
-            await vault_cache.invalidate_path(path, exists=False)
-
-            return json.dumps(
-                {
-                    "success": True,
-                    "name": name,
-                    "path": path,
-                    "message": f"Memory '{name}' deleted successfully",
-                }
+        if _name(found) != shown:
+            raise NoteExistsError(
+                f"Memory {_name(found)!r} already uses the slug '{slugify(name)}'. "
+                f"Write to {_name(found)!r} to update it, or pick a different name."
             )
+        # One atomic edit inside Obsidian: the body is replaced and only `type`, `updated` and, where
+        # missing, `name` and `created` are written; every other frontmatter line stays as it is.
+        properties: dict[str, object] = {"updated": now}
+        if memory_type:
+            properties["type"] = memory_type
+        modified = found.modified.strftime("%Y-%m-%dT%H:%M:%SZ")
+        await vault.replace_body(
+            found.path,
+            content,
+            properties=properties,
+            defaults={"name": shown, "created": modified},
+        )
+        return MemoryWritten(name=shown, path=found.path, action="updated")
 
-        except NoteNotFoundError:
-            return json.dumps(
-                {
-                    "error": True,
-                    "type": "MemoryNotFoundError",
-                    "message": f"Memory '{name}' not found",
-                    "path": path,
-                }
-            )
-        except OPERATIONAL_ERRORS as error:
-            return error_json(error)
+    @server.tool(annotations=DESTRUCTIVE)
+    async def delete_memory(name: MemoryName) -> MemoryDeleted:
+        """Delete a memory that is outdated or wrong; the file goes to Obsidian's trash.
 
-    @server.tool()
-    async def edit_memory(
-        name: str,
-        search: str,
-        replace: str,
-        mode: str = "literal",
-    ) -> str:
+        Use list_memories to check the name, write_memory to correct a memory instead.
+        Example: delete_memory(name="old-project-notes")
         """
-        Edit a memory by replacing content matching a pattern.
-
-        Args:
-            name: Memory name to edit
-            search: String or regex pattern to search for
-            replace: Replacement string
-            mode: "literal" for exact string match, "regex" for regex pattern
-
-        Returns:
-            JSON with success status and number of replacements
-        """
-        import re
-
-        path = memory_manager.get_memory_path(name)
-
-        try:
-            data = await client.get_note(path)
-            content = data.get("content", "")
-            raw_content = data.get("raw", content)
-
-            if mode == "regex":
-                try:
-                    pattern = re.compile(search, re.DOTALL | re.MULTILINE)
-                    new_content, count = pattern.subn(replace, content)
-                except re.error as e:
-                    return json.dumps(
-                        {
-                            "error": True,
-                            "type": "RegexError",
-                            "message": f"Invalid regex pattern: {e}",
-                        }
-                    )
-            else:
-                count = content.count(search)
-                new_content = content.replace(search, replace)
-
-            if count == 0:
-                return json.dumps(
-                    {
-                        "success": False,
-                        "message": "Pattern not found in memory",
-                        "name": name,
-                    }
-                )
-
-            # Update the memory with new content
-            full_content = memory_manager.update_memory_content(raw_content, new_content)
-            await client.update_note(path, full_content)
-
-            await vault_cache.sync_note(client, path)
-
-            return json.dumps(
-                {
-                    "success": True,
-                    "name": name,
-                    "path": path,
-                    "replacements": count,
-                    "message": f"Made {count} replacement(s) in memory '{name}'",
-                }
-            )
-
-        except NoteNotFoundError:
-            return json.dumps(
-                {
-                    "error": True,
-                    "type": "MemoryNotFoundError",
-                    "message": f"Memory '{name}' not found",
-                    "path": path,
-                }
-            )
-        except OPERATIONAL_ERRORS as error:
-            return error_json(error)
-
-
-def _format_frontmatter(frontmatter: dict) -> str:
-    """Format frontmatter dict as YAML string."""
-    import yaml
-
-    return yaml.dump(frontmatter, default_flow_style=False, sort_keys=False)
+        vault = get_vault()
+        found = await _find(vault, name)
+        if found is None:
+            raise _missing(name)
+        await vault.delete(found.path)
+        return MemoryDeleted(name=_name(found), path=found.path)
